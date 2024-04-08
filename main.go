@@ -2,9 +2,8 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"net"
-	"strconv"
+	"os"
 	"sync"
 
 	"github.com/davecgh/go-spew/spew"
@@ -14,8 +13,9 @@ import (
 )
 
 var scs = spew.ConfigState{Indent: "  "}
+var log = logrus.Logger{}
 
-type bgpEndpoint struct {
+type bgpLBEndpoint struct {
 	macAddress  net.HardwareAddr
 	vethInside  string
 	vethOutside string
@@ -23,20 +23,20 @@ type bgpEndpoint struct {
 
 type bgpNetwork struct {
 	bridgeName string
-	endpoints  map[string]*bgpEndpoint
+	endpoints  map[string]*bgpLBEndpoint
 }
 
-type BgpLB struct {
+type bgpLB struct {
 	scope    string
 	networks map[string]*bgpNetwork
 	sync.Mutex
 }
 
-func (d *BgpLB) GetIpamCapabilities() (*api.CapabilitiesResponse, error) {
+func (d *bgpLB) GetIpamCapabilities() (*api.CapabilitiesResponse, error) {
 	return &api.CapabilitiesResponse{RequiresMACAddress: true}, nil
 }
 
-func (d *BgpLB) GetNetCapabilities() (*api.CapabilitiesResponse, error) {
+func (d *bgpLB) GetNetCapabilities() (*api.CapabilitiesResponse, error) {
 	capabilities := &api.CapabilitiesResponse{
 		Scope: d.scope,
 	}
@@ -44,43 +44,45 @@ func (d *BgpLB) GetNetCapabilities() (*api.CapabilitiesResponse, error) {
 	return capabilities, nil
 }
 
-func (d *BgpLB) GetDefaultAddressSpaces() (*api.AddressSpacesResponse, error) {
+func (d *bgpLB) GetDefaultAddressSpaces() (*api.AddressSpacesResponse, error) {
 	return &api.AddressSpacesResponse{LocalDefaultAddressSpace: api.LocalScope,
 		GlobalDefaultAddressSpace: api.GlobalScope}, nil
 }
 
-func (d *BgpLB) RequestPool(r *api.RequestPoolRequest) (*api.RequestPoolResponse, error) {
+func (d *bgpLB) RequestPool(r *api.RequestPoolRequest) (*api.RequestPoolResponse, error) {
 	if r.Pool == "" {
 		return &api.RequestPoolResponse{}, errors.New("Subnet is required")
+	}
+
+	_, ipnet, err := net.ParseCIDR(r.Pool)
+	if err != nil {
+		return &api.RequestPoolResponse{}, err
+	}
+	mask, _ := ipnet.Mask.Size()
+	if mask != 32 {
+		return &api.RequestPoolResponse{}, errors.New("Only subnet mask /32 is supported")
 	}
 
 	return &api.RequestPoolResponse{PoolID: r.Pool, Pool: r.Pool}, nil
 }
 
-func (d *BgpLB) RequestAddress(r *api.RequestAddressRequest) (*api.RequestAddressResponse, error) {
-	if r.Address == "" {
-		return &api.RequestAddressResponse{}, errors.New("IP is required")
+func (d *bgpLB) RequestAddress(r *api.RequestAddressRequest) (*api.RequestAddressResponse, error) {
+	if r.Options["RequestAddressType"] == "com.docker.network.gateway" {
+		return &api.RequestAddressResponse{Address: r.PoolID}, nil
 	}
 
-	_, ipnet, err := net.ParseCIDR(r.PoolID)
-	if err != nil {
-		return &api.RequestAddressResponse{}, err
-	}
-	mask, _ := ipnet.Mask.Size()
-	addr := fmt.Sprintf("%s/%s", r.Address, strconv.Itoa(mask))
-	return &api.RequestAddressResponse{Address: addr}, nil
+	return &api.RequestAddressResponse{Address: r.PoolID}, nil
 }
 
-func (d *BgpLB) ReleaseAddress(r *api.ReleaseAddressRequest) error {
+func (d *bgpLB) ReleaseAddress(r *api.ReleaseAddressRequest) error {
 	return nil
 }
 
-func (d *BgpLB) ReleasePool(r *api.ReleasePoolRequest) error {
+func (d *bgpLB) ReleasePool(r *api.ReleasePoolRequest) error {
 	return nil
 }
 
-func (d *BgpLB) CreateNetwork(r *api.CreateNetworkRequest) error {
-
+func (d *bgpLB) CreateNetwork(r *api.CreateNetworkRequest) error {
 	d.Lock()
 	defer d.Unlock()
 
@@ -88,14 +90,14 @@ func (d *BgpLB) CreateNetwork(r *api.CreateNetworkRequest) error {
 		return types.ForbiddenErrorf("network %s exists", r.NetworkID)
 	}
 
-	bridgeName, err := createBridge(r.NetworkID, r.IPv4Data[0].Gateway)
+	bridgeName, err := createBridge(r.NetworkID)
 	if err != nil {
 		return err
 	}
 
 	bgpNetwork := &bgpNetwork{
 		bridgeName: bridgeName,
-		endpoints:  make(map[string]*bgpEndpoint),
+		endpoints:  make(map[string]*bgpLBEndpoint),
 	}
 
 	d.networks[r.NetworkID] = bgpNetwork
@@ -103,7 +105,7 @@ func (d *BgpLB) CreateNetwork(r *api.CreateNetworkRequest) error {
 	return nil
 }
 
-func (d *BgpLB) DeleteNetwork(r *api.DeleteNetworkRequest) error {
+func (d *bgpLB) DeleteNetwork(r *api.DeleteNetworkRequest) error {
 	d.Lock()
 	defer d.Unlock()
 
@@ -122,15 +124,15 @@ func (d *BgpLB) DeleteNetwork(r *api.DeleteNetworkRequest) error {
 	return nil
 }
 
-func (d *BgpLB) AllocateNetwork(r *api.AllocateNetworkRequest) (*api.AllocateNetworkResponse, error) {
+func (d *bgpLB) AllocateNetwork(r *api.AllocateNetworkRequest) (*api.AllocateNetworkResponse, error) {
 	return nil, nil
 }
 
-func (d *BgpLB) FreeNetwork(r *api.FreeNetworkRequest) error {
+func (d *bgpLB) FreeNetwork(r *api.FreeNetworkRequest) error {
 	return nil
 }
 
-func (d *BgpLB) CreateEndpoint(r *api.CreateEndpointRequest) (*api.CreateEndpointResponse, error) {
+func (d *bgpLB) CreateEndpoint(r *api.CreateEndpointRequest) (*api.CreateEndpointResponse, error) {
 	d.Lock()
 	defer d.Unlock()
 
@@ -142,7 +144,7 @@ func (d *BgpLB) CreateEndpoint(r *api.CreateEndpointRequest) (*api.CreateEndpoin
 	intfInfo := new(api.EndpointInterface)
 	parsedMac, _ := net.ParseMAC(intfInfo.MacAddress)
 
-	endpoint := &bgpEndpoint{
+	endpoint := &bgpLBEndpoint{
 		macAddress: parsedMac,
 	}
 
@@ -152,10 +154,13 @@ func (d *BgpLB) CreateEndpoint(r *api.CreateEndpointRequest) (*api.CreateEndpoin
 		Interface: intfInfo,
 	}
 
+	// Start Goroutine which will add local and BGP routes after container is up and running
+	go addRoute(r.NetworkID, r.EndpointID, r.Interface.Address, r.Interface.AddressIPv6)
+
 	return resp, nil
 }
 
-func (d *BgpLB) DeleteEndpoint(r *api.DeleteEndpointRequest) error {
+func (d *bgpLB) DeleteEndpoint(r *api.DeleteEndpointRequest) error {
 	d.Lock()
 	defer d.Unlock()
 
@@ -173,7 +178,7 @@ func (d *BgpLB) DeleteEndpoint(r *api.DeleteEndpointRequest) error {
 	return nil
 }
 
-func (d *BgpLB) EndpointInfo(r *api.InfoRequest) (*api.InfoResponse, error) {
+func (d *bgpLB) EndpointInfo(r *api.InfoRequest) (*api.InfoResponse, error) {
 	d.Lock()
 	defer d.Unlock()
 
@@ -200,7 +205,7 @@ func (d *BgpLB) EndpointInfo(r *api.InfoRequest) (*api.InfoResponse, error) {
 	return resp, nil
 }
 
-func (d *BgpLB) Join(r *api.JoinRequest) (*api.JoinResponse, error) {
+func (d *bgpLB) Join(r *api.JoinRequest) (*api.JoinResponse, error) {
 	d.Lock()
 	defer d.Unlock()
 
@@ -236,7 +241,7 @@ func (d *BgpLB) Join(r *api.JoinRequest) (*api.JoinResponse, error) {
 	return resp, nil
 }
 
-func (d *BgpLB) Leave(r *api.LeaveRequest) error {
+func (d *bgpLB) Leave(r *api.LeaveRequest) error {
 	d.Lock()
 	defer d.Unlock()
 
@@ -249,6 +254,8 @@ func (d *BgpLB) Leave(r *api.LeaveRequest) error {
 		return types.ForbiddenErrorf("%s endpoint does not exist", r.NetworkID)
 	}
 
+	delRoute(r.NetworkID, r.EndpointID)
+
 	endpointInfo := d.networks[r.NetworkID].endpoints[r.EndpointID]
 
 	if err := deleteVethPair(endpointInfo.vethOutside); err != nil {
@@ -258,28 +265,41 @@ func (d *BgpLB) Leave(r *api.LeaveRequest) error {
 	return nil
 }
 
-func (d *BgpLB) DiscoverNew(r *api.DiscoveryNotification) error {
+func (d *bgpLB) DiscoverNew(r *api.DiscoveryNotification) error {
 	return nil
 }
 
-func (d *BgpLB) DiscoverDelete(r *api.DiscoveryNotification) error {
+func (d *bgpLB) DiscoverDelete(r *api.DiscoveryNotification) error {
 	return nil
 }
 
-func (d *BgpLB) ProgramExternalConnectivity(r *api.ProgramExternalConnectivityRequest) error {
+func (d *bgpLB) ProgramExternalConnectivity(r *api.ProgramExternalConnectivityRequest) error {
 	return nil
 }
 
-func (d *BgpLB) RevokeExternalConnectivity(r *api.RevokeExternalConnectivityRequest) error {
+func (d *bgpLB) RevokeExternalConnectivity(r *api.RevokeExternalConnectivityRequest) error {
 	return nil
 }
 
 func main() {
-	d := &BgpLB{
+	log = *logrus.New()
+	log.SetLevel(logrus.DebugLevel)
+	log.Out = os.Stdout
+
+	err := startBgpServer()
+	if err != nil {
+		log.Errorf("Starting BGP server failed: %v", err)
+		return
+	}
+
+	log.Infof("Starting Docker BGP LB Plugin")
+	d := &bgpLB{
 		scope: "local",
 		networks: map[string]*bgpNetwork{},
 	}
 	h := api.NewHandler(d)
-	logrus.Infof("Starting Docker BGP LB Plugin")
-	h.ServeUnix("bgplb", 0)
+	if err = h.ServeUnix("bgplb", 0); err != nil {
+		log.Errorf("ServeUnix failed: %v", err)
+		return
+	}
 }

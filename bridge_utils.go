@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/docker/docker/libnetwork/iptables"
 	"github.com/docker/docker/libnetwork/ns"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
@@ -12,15 +11,15 @@ import (
 )
 
 const (
-	bridgePrefix = "kt"
-	bridgeLen    = 12
+	bridgePrefix = "bgplb"
+	bridgeLen    = 9
 )
 
 func getBridgeName(netID string) string {
 	return bridgePrefix + "-" + netID[:bridgeLen]
 }
 
-func createBridge(netID , ipv4 string) (string, error) {
+func createBridge(netID string) (string, error) {
 	bridgeName := getBridgeName(netID)
 
 	exists, err := bridgeInterfaceExists(bridgeName)
@@ -41,23 +40,6 @@ func createBridge(netID , ipv4 string) (string, error) {
 
 	bridge, err := netlink.LinkByName(bridgeName)
 	if err != nil {
-		return "", err
-	}
-
-	addr, err := netlink.ParseAddr(ipv4)
-	if err != nil {
-		return "", err
-	}
-	if err := netlink.AddrAdd(bridge, addr); err != nil {
-		return "", err
-	}
-
-	// FixMe: Allow only exposed ports and those only to load balancer IP
-	var bridgeRule = []string{"-i", "eth0", "-o", bridgeName, "-j", "ACCEPT"}
-
-	// Install rule in IPv4
-	var iptablev4 = iptables.GetIptable(iptables.IPv4)
-	if err := iptablev4.ProgramRule(iptables.Filter, "FORWARD", iptables.Append, bridgeRule); err != nil {
 		return "", err
 	}
 
@@ -110,15 +92,6 @@ func deleteBridge(netID string) error {
 	if err := netlink.LinkDel(bridge); err != nil {
 		return err
 	}
-
-	var bridgeRule = []string{"-i", "eth0", "-o", bridgeName, "-j", "ACCEPT"}
-
-	// Delete rule in IPv4
-	var iptablev4 = iptables.GetIptable(iptables.IPv4)
-	if err := iptablev4.ProgramRule(iptables.Filter, "FORWARD", iptables.Delete, bridgeRule); err != nil {
-		return err
-	}
-
 
 	return nil
 }
