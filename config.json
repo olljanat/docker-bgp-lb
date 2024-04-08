@@ -1,0 +1,59 @@
+{
+    "description": "BGP Load Balancing Plugin",
+    "documentation": "https://docs.docker.com/engine/extend/config/",
+    "entrypoint": [
+        "/docker-bgp-lb"
+    ],
+    "env": [
+		{
+			"name": "ROUTER_ID",
+			"description": "Router ID",
+			"settable": [
+				"value"
+			],
+			"value": ""
+		},
+		{
+			"name": "LOCAL_AS",
+			"description": "Local AS number",
+			"settable": [
+				"value"
+			],
+			"value": ""
+		},
+		{
+			"name": "PEER_ADDRESS",
+			"description": "Peer IP address",
+			"settable": [
+				"value"
+			],
+			"value": ""
+		},
+		{
+			"name": "PEER_AS",
+			"description": "Peer AS number",
+			"settable": [
+				"value"
+			],
+			"value": ""
+		}
+    ],
+    "mounts": [],
+    "interface": {
+        "socket": "/bgplb.sock",
+        "types": [
+            "docker.ipamdriver/1.0",
+            "docker.networkdriver/1.0"
+        ]
+    },
+    "linux": {
+        "capabilities": [
+            "CAP_SYS_ADMIN",
+            "CAP_NET_ADMIN",
+            "CAP_NET_RAW"
+        ]
+    },
+    "network": {
+        "type": "host"
+	}
+}

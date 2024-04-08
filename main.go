@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 	"sync"
 
@@ -11,9 +13,18 @@ import (
 	"github.com/docker/docker/libnetwork/types"
 	"github.com/olljanat/docker-bgp-lb/api"
 	"github.com/sirupsen/logrus"
+	apiGoBGP "github.com/osrg/gobgp/v3/api"
+	loggerGoBGP "github.com/osrg/gobgp/v3/pkg/log"
+	serverGoBGP "github.com/osrg/gobgp/v3/pkg/server"
+	apb "google.golang.org/protobuf/types/known/anypb"
 )
 
 var scs = spew.ConfigState{Indent: "  "}
+var bgpServer = serverGoBGP.BgpServer{}
+var log = logrus.Logger{}
+
+var routerid = ""
+var localAs = uint32(0)
 
 type bgpEndpoint struct {
 	macAddress  net.HardwareAddr
@@ -68,6 +79,43 @@ func (d *BgpLB) RequestAddress(r *api.RequestAddressRequest) (*api.RequestAddres
 	}
 	mask, _ := ipnet.Mask.Size()
 	addr := fmt.Sprintf("%s/%s", r.Address, strconv.Itoa(mask))
+
+
+	// Advertise LB IPs with /32 mask to BGP peer
+	if r.Options["RequestAddressType"] != "com.docker.network.gateway" {
+
+		log.Infof("RequestAddress, Adding %v/32 to BGP", r.Address)
+		nlri, _ := apb.New(&apiGoBGP.IPAddressPrefix{
+			Prefix:    r.Address,
+			PrefixLen: 32,
+		})
+
+		a1, _ := apb.New(&apiGoBGP.OriginAttribute{
+			Origin: 0,
+		})
+		a2, _ := apb.New(&apiGoBGP.NextHopAttribute{
+			NextHop: routerid,
+		})
+		a3, _ := apb.New(&apiGoBGP.AsPathAttribute{
+			Segments: []*apiGoBGP.AsSegment{
+				{
+					Type:    2,
+				},
+			},
+		})
+		attrs := []*apb.Any{a1, a2, a3}
+		_, err = bgpServer.AddPath(context.Background(), &apiGoBGP.AddPathRequest{
+			Path: &apiGoBGP.Path{
+				Family: &apiGoBGP.Family{Afi: apiGoBGP.Family_AFI_IP, Safi: apiGoBGP.Family_SAFI_UNICAST},
+				Nlri:   nlri,
+				Pattrs: attrs,
+			},
+		})
+		if err != nil {
+			return &api.RequestAddressResponse{}, err
+		}
+	}
+
 	return &api.RequestAddressResponse{Address: addr}, nil
 }
 
@@ -275,11 +323,73 @@ func (d *BgpLB) RevokeExternalConnectivity(r *api.RevokeExternalConnectivityRequ
 }
 
 func main() {
+	log = *logrus.New()
+	log.SetLevel(logrus.DebugLevel)
+	log.Out = os.Stdout
+
+	routerid = os.Getenv("ROUTER_ID")
+	if routerid == "" && net.ParseIP(routerid) == nil {
+		log.Errorf("Environment variable ROUTER_ID is required\r\n")
+		return
+	}
+
+	localAsInt, err := strconv.Atoi(os.Getenv("LOCAL_AS"))
+	if err != nil {
+		log.Errorf("Environment variable LOCAL_AS value is invalid\r\n")
+		return
+	}
+	localAs = uint32(localAsInt)
+
+	peerAddress := os.Getenv("PEER_ADDRESS")
+	if peerAddress == "" && net.ParseIP(peerAddress) == nil {
+		log.Errorf("Environment variable PEER_ADDRESS is required\r\n")
+		return
+	}
+
+	peerAs, err := strconv.Atoi(os.Getenv("PEER_AS"))
+	if err != nil {
+		log.Errorf("Environment variable PEER_AS value is invalid\r\n")
+		return
+	}
+
+	log.Infof("Starting BGP server")
+	bgpLogger := loggerGoBGP.NewDefaultLogger()
+	bgpServer = *serverGoBGP.NewBgpServer(serverGoBGP.LoggerOption(bgpLogger))
+	go bgpServer.Serve()
+	err = bgpServer.StartBgp(context.Background(), &apiGoBGP.StartBgpRequest{
+		Global: &apiGoBGP.Global{
+			RouterId:   routerid,
+			Asn:        localAs,
+			ListenPort: -1, // Passive mode, do not listen incoming BGP
+		},
+	})
+	if err != nil {
+		log.Errorf("StartBgp failed: %v", err)
+		return
+	}
+
+	n := &apiGoBGP.Peer{
+		Conf: &apiGoBGP.PeerConf{
+			NeighborAddress: peerAddress,
+			PeerAsn:          uint32(peerAs),
+		},
+	}
+	if err := bgpServer.AddPeer(context.Background(), &apiGoBGP.AddPeerRequest{
+		Peer: n,
+	}); err != nil {
+		log.Errorf("Adding BGP peer failed: %v", err)
+		return
+	}
+
+
+	log.Infof("Starting Docker BGP LB Plugin")
 	d := &BgpLB{
 		scope: "local",
 		networks: map[string]*bgpNetwork{},
 	}
 	h := api.NewHandler(d)
-	logrus.Infof("Starting Docker BGP LB Plugin")
-	h.ServeUnix("bgplb", 0)
+	if err = h.ServeUnix("bgplb", 0); err != nil {
+		log.Errorf("ServeUnix failed: %v", err)
+		return
+	}
 }

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/docker/docker/libnetwork/iptables"
+	// "github.com/docker/docker/libnetwork/iptables"
 	"github.com/docker/docker/libnetwork/ns"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
@@ -52,6 +52,7 @@ func createBridge(netID , ipv4 string) (string, error) {
 		return "", err
 	}
 
+	/*
 	// FixMe: Allow only exposed ports and those only to load balancer IP
 	var bridgeRule = []string{"-i", "eth0", "-o", bridgeName, "-j", "ACCEPT"}
 
@@ -60,6 +61,7 @@ func createBridge(netID , ipv4 string) (string, error) {
 	if err := iptablev4.ProgramRule(iptables.Filter, "FORWARD", iptables.Append, bridgeRule); err != nil {
 		return "", err
 	}
+	*/
 
 	if err := patchBridge(bridge); err != nil {
 		return "", err
@@ -111,6 +113,7 @@ func deleteBridge(netID string) error {
 		return err
 	}
 
+	/*
 	var bridgeRule = []string{"-i", "eth0", "-o", bridgeName, "-j", "ACCEPT"}
 
 	// Delete rule in IPv4
@@ -118,7 +121,7 @@ func deleteBridge(netID string) error {
 	if err := iptablev4.ProgramRule(iptables.Filter, "FORWARD", iptables.Delete, bridgeRule); err != nil {
 		return err
 	}
-
+	*/
 
 	return nil
 }
