@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"net"
+	// "net"
 	"strings"
 
 	// "github.com/docker/docker/libnetwork/iptables"
@@ -45,20 +45,19 @@ func createBridge(netID , ipv4 string) (string, error) {
 		return "", err
 	}
 
-	// Add "gateway" IP to bridge interface with /32 mask
-	// so we can use it to add static routes to load balancer IPs
+	/*
+	// Add local route with /32 mask to bridge
 	ip, _, err := net.ParseCIDR(ipv4)
 	if err != nil {
 		return "", err
 	}
 	addr := fmt.Sprintf("%s/32", ip)
-	addr2, err := netlink.ParseAddr(addr)
-	if err != nil {
+	_, hostDst, _ := net.ParseCIDR(addr)
+	route := netlink.Route{Dst: hostDst, LinkIndex: bridge.Attrs().Index}
+	if err := netlink.RouteAdd(&route); err != nil {
 		return "", err
 	}
-	if err := netlink.AddrAdd(bridge, addr2); err != nil {
-		return "", err
-	}
+	*/
 
 	/*
 	// FixMe: Allow only exposed ports and those only to load balancer IP

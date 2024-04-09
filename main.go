@@ -12,7 +12,6 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/docker/docker/libnetwork/types"
 	"github.com/olljanat/docker-bgp-lb/api"
-	"github.com/vishvananda/netlink"
 	"github.com/sirupsen/logrus"
 	apiGoBGP "github.com/osrg/gobgp/v3/api"
 	loggerGoBGP "github.com/osrg/gobgp/v3/pkg/log"
@@ -66,10 +65,26 @@ func (d *BgpLB) RequestPool(r *api.RequestPoolRequest) (*api.RequestPoolResponse
 		return &api.RequestPoolResponse{}, errors.New("Subnet is required")
 	}
 
+	/*
+	_, ipnet, err := net.ParseCIDR(r.Pool)
+	if err != nil {
+		return &api.RequestPoolResponse{}, err
+	}
+	mask, _ := ipnet.Mask.Size()
+	if mask != 32 {
+		return &api.RequestPoolResponse{}, errors.New("Only subnet mask /32 is supported")
+	}
+	*/
+
 	return &api.RequestPoolResponse{PoolID: r.Pool, Pool: r.Pool}, nil
 }
 
 func (d *BgpLB) RequestAddress(r *api.RequestAddressRequest) (*api.RequestAddressResponse, error) {
+	/*
+	if r.Options["RequestAddressType"] == "com.docker.network.gateway" {
+		return &api.RequestAddressResponse{Address: r.PoolID}, nil
+	}
+	*/
 	if r.Address == "" {
 		return &api.RequestAddressResponse{}, errors.New("IP is required")
 	}
@@ -81,20 +96,7 @@ func (d *BgpLB) RequestAddress(r *api.RequestAddressRequest) (*api.RequestAddres
 	mask, _ := ipnet.Mask.Size()
 	addr := fmt.Sprintf("%s/%s", r.Address, strconv.Itoa(mask))
 
-	if r.Options["RequestAddressType"] == "com.docker.network.gateway" {
-		return &api.RequestAddressResponse{Address: addr}, nil
-	}
 
-	// Add local route with /32 mask
-	link, err := netlink.LinkByName("dummy_route6")
-	if err != nil {
-		return &api.RequestAddressResponse{}, err
-	}
-	_, hostDst, _ := net.ParseCIDR(fmt.Sprintf("%s/32"))
-	route := netlink.Route{Dst: hostDst, LinkIndex: link.Attrs().Index}
-	if err := netlink.RouteAdd(&route); err != nil {
-		return &api.RequestAddressResponse{}, err
-	}
 
 	// Advertise LB IPs with /32 mask to BGP peer
 	log.Infof("RequestAddress, Adding %v/32 to BGP", r.Address)
