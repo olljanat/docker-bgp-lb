@@ -12,6 +12,7 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/docker/docker/libnetwork/types"
 	"github.com/olljanat/docker-bgp-lb/api"
+	"github.com/vishvananda/netlink"
 	"github.com/sirupsen/logrus"
 	apiGoBGP "github.com/osrg/gobgp/v3/api"
 	loggerGoBGP "github.com/osrg/gobgp/v3/pkg/log"
@@ -80,46 +81,60 @@ func (d *BgpLB) RequestAddress(r *api.RequestAddressRequest) (*api.RequestAddres
 	mask, _ := ipnet.Mask.Size()
 	addr := fmt.Sprintf("%s/%s", r.Address, strconv.Itoa(mask))
 
+	if r.Options["RequestAddressType"] == "com.docker.network.gateway" {
+		return &api.RequestAddressResponse{Address: addr}, nil
+	}
+
+	// Add local route with /32 mask
+	link, err := netlink.LinkByName("dummy_route6")
+	if err != nil {
+		return &api.RequestAddressResponse{}, err
+	}
+	_, hostDst, _ := net.ParseCIDR(fmt.Sprintf("%s/32"))
+	route := netlink.Route{Dst: hostDst, LinkIndex: link.Attrs().Index}
+	if err := netlink.RouteAdd(&route); err != nil {
+		return &api.RequestAddressResponse{}, err
+	}
 
 	// Advertise LB IPs with /32 mask to BGP peer
-	if r.Options["RequestAddressType"] != "com.docker.network.gateway" {
+	log.Infof("RequestAddress, Adding %v/32 to BGP", r.Address)
+	nlri, _ := apb.New(&apiGoBGP.IPAddressPrefix{
+		Prefix:    r.Address,
+		PrefixLen: 32,
+	})
 
-		log.Infof("RequestAddress, Adding %v/32 to BGP", r.Address)
-		nlri, _ := apb.New(&apiGoBGP.IPAddressPrefix{
-			Prefix:    r.Address,
-			PrefixLen: 32,
-		})
-
-		a1, _ := apb.New(&apiGoBGP.OriginAttribute{
-			Origin: 0,
-		})
-		a2, _ := apb.New(&apiGoBGP.NextHopAttribute{
-			NextHop: routerid,
-		})
-		a3, _ := apb.New(&apiGoBGP.AsPathAttribute{
-			Segments: []*apiGoBGP.AsSegment{
-				{
-					Type:    2,
-				},
+	a1, _ := apb.New(&apiGoBGP.OriginAttribute{
+		Origin: 0,
+	})
+	a2, _ := apb.New(&apiGoBGP.NextHopAttribute{
+		NextHop: routerid,
+	})
+	a3, _ := apb.New(&apiGoBGP.AsPathAttribute{
+		Segments: []*apiGoBGP.AsSegment{
+			{
+				Type:    2,
 			},
-		})
-		attrs := []*apb.Any{a1, a2, a3}
-		_, err = bgpServer.AddPath(context.Background(), &apiGoBGP.AddPathRequest{
-			Path: &apiGoBGP.Path{
-				Family: &apiGoBGP.Family{Afi: apiGoBGP.Family_AFI_IP, Safi: apiGoBGP.Family_SAFI_UNICAST},
-				Nlri:   nlri,
-				Pattrs: attrs,
-			},
-		})
-		if err != nil {
-			return &api.RequestAddressResponse{}, err
-		}
+		},
+	})
+	attrs := []*apb.Any{a1, a2, a3}
+	_, err = bgpServer.AddPath(context.Background(), &apiGoBGP.AddPathRequest{
+		Path: &apiGoBGP.Path{
+			Family: &apiGoBGP.Family{Afi: apiGoBGP.Family_AFI_IP, Safi: apiGoBGP.Family_SAFI_UNICAST},
+			Nlri:   nlri,
+			Pattrs: attrs,
+		},
+	})
+	if err != nil {
+		return &api.RequestAddressResponse{}, err
 	}
+
 
 	return &api.RequestAddressResponse{Address: addr}, nil
 }
 
 func (d *BgpLB) ReleaseAddress(r *api.ReleaseAddressRequest) error {
+	rFormatted := scs.Sdump(r)
+	log.Infof(rFormatted)
 	return nil
 }
 
@@ -128,7 +143,6 @@ func (d *BgpLB) ReleasePool(r *api.ReleasePoolRequest) error {
 }
 
 func (d *BgpLB) CreateNetwork(r *api.CreateNetworkRequest) error {
-
 	d.Lock()
 	defer d.Unlock()
 
