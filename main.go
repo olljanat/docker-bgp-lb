@@ -292,6 +292,12 @@ func main() {
 		return
 	}
 
+	if os.Getenv("SIGUSR2_HANDLER") == "true" {
+		log.Infof("Starting SIGUSR2 signal handler")
+		go watchDockerStopEvents()
+	}
+
+
 	log.Infof("Starting Docker BGP LB Plugin")
 	d := &bgpLB{
 		scope: "local",

@@ -36,6 +36,14 @@
 				"value"
 			],
 			"value": ""
+		},
+		{
+			"name": "SIGUSR2_HANDLER",
+			"description": "Enable SIGUSR2 signal handler",
+			"settable": [
+				"value"
+			],
+			"value": "false"
 		}
     ],
     "mounts": [
