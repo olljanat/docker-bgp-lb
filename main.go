@@ -45,7 +45,7 @@ func (d *bgpLB) GetNetCapabilities() (*api.CapabilitiesResponse, error) {
 }
 
 func (d *bgpLB) GetDefaultAddressSpaces() (*api.AddressSpacesResponse, error) {
-	return &api.AddressSpacesResponse{LocalDefaultAddressSpace: api.LocalScope,
+	return &api.AddressSpacesResponse{LocalDefaultAddressSpace: api.GlobalScope,
 		GlobalDefaultAddressSpace: api.GlobalScope}, nil
 }
 
@@ -297,10 +297,9 @@ func main() {
 		go watchDockerStopEvents()
 	}
 
-
 	log.Infof("Starting Docker BGP LB Plugin")
 	d := &bgpLB{
-		scope: "local",
+		scope:    "local",
 		networks: map[string]*bgpNetwork{},
 	}
 	h := api.NewHandler(d)

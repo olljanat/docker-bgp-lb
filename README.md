@@ -35,6 +35,7 @@ Example config:
   [dynamic-neighbors.config]
     prefix = "192.168.8.0/24"
     peer-group = "bgp-lb"
+    auth-password = "P@ssw0rd!"
 ```
 Run with command `./gobgpd --log-level=debug -f gobgp.toml`
 
@@ -47,6 +48,7 @@ docker plugin install \
   LOCAL_AS=65534 \
   PEER_ADDRESS=192.168.8.137 \
   PEER_AS=64512 \
+  PEER_PASSWORD=P@ssw0rd! \
   SIGUSR2_HANDLER=true
 ```
 GoBGP inform about incoming BGP connection with message like this:

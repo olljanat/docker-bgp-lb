@@ -10,8 +10,8 @@ import (
 	apiGoBGP "github.com/osrg/gobgp/v3/api"
 	loggerGoBGP "github.com/osrg/gobgp/v3/pkg/log"
 	serverGoBGP "github.com/osrg/gobgp/v3/pkg/server"
-	apb "google.golang.org/protobuf/types/known/anypb"
 	"github.com/vishvananda/netlink"
+	apb "google.golang.org/protobuf/types/known/anypb"
 )
 
 var bgpServer = serverGoBGP.BgpServer{}
@@ -41,6 +41,11 @@ func startBgpServer() error {
 	}
 	peerAs := uint32(peerAsInt)
 
+	peerPassword := os.Getenv("PEER_PASSWORD")
+	if peerPassword == "" {
+		return fmt.Errorf("Environment variable PEER_PASSWORD is required\r\n")
+	}
+
 	log.Infof("Starting BGP server")
 	bgpLogger := loggerGoBGP.NewDefaultLogger()
 	bgpServer = *serverGoBGP.NewBgpServer(serverGoBGP.LoggerOption(bgpLogger))
@@ -59,7 +64,8 @@ func startBgpServer() error {
 	n := &apiGoBGP.Peer{
 		Conf: &apiGoBGP.PeerConf{
 			NeighborAddress: peerAddress,
-			PeerAsn:          peerAs,
+			PeerAsn:         peerAs,
+			AuthPassword:    peerPassword,
 		},
 	}
 	if err := bgpServer.AddPeer(context.Background(), &apiGoBGP.AddPeerRequest{
@@ -112,7 +118,7 @@ func addBgpRoute(prefix string, mask int) error {
 	a3, _ := apb.New(&apiGoBGP.AsPathAttribute{
 		Segments: []*apiGoBGP.AsSegment{
 			{
-				Type:    2,
+				Type: 2,
 			},
 		},
 	})
@@ -175,7 +181,7 @@ func delBgpRoute(prefix string, mask int) error {
 	a3, _ := apb.New(&apiGoBGP.AsPathAttribute{
 		Segments: []*apiGoBGP.AsSegment{
 			{
-				Type:    2,
+				Type: 2,
 			},
 		},
 	})

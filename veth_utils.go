@@ -9,8 +9,8 @@ import (
 )
 
 const (
-	vethPrefix	= "veth"
-	vethLen		= 8
+	vethPrefix = "veth"
+	vethLen    = 8
 )
 
 func randomVethName() string {

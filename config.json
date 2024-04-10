@@ -38,6 +38,14 @@
 			"value": ""
 		},
 		{
+			"name": "PEER_PASSWORD",
+			"description": "Peer password",
+			"settable": [
+				"value"
+			],
+			"value": ""
+		},
+		{
 			"name": "SIGUSR2_HANDLER",
 			"description": "Enable SIGUSR2 signal handler",
 			"settable": [
