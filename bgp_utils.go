@@ -41,11 +41,6 @@ func startBgpServer() error {
 	}
 	peerAs := uint32(peerAsInt)
 
-	peerPassword := os.Getenv("PEER_PASSWORD")
-	if peerPassword == "" {
-		return fmt.Errorf("Environment variable PEER_PASSWORD is required\r\n")
-	}
-
 	log.Infof("Starting BGP server")
 	bgpLogger := loggerGoBGP.NewDefaultLogger()
 	bgpServer = *serverGoBGP.NewBgpServer(serverGoBGP.LoggerOption(bgpLogger))
@@ -65,8 +60,11 @@ func startBgpServer() error {
 		Conf: &apiGoBGP.PeerConf{
 			NeighborAddress: peerAddress,
 			PeerAsn:         peerAs,
-			AuthPassword:    peerPassword,
 		},
+	}
+	peerPassword := os.Getenv("PEER_PASSWORD")
+	if peerPassword != "" {
+		n.Conf.AuthPassword = peerPassword
 	}
 	if err := bgpServer.AddPeer(context.Background(), &apiGoBGP.AddPeerRequest{
 		Peer: n,

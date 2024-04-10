@@ -44,7 +44,7 @@ Run with command `./gobgpd --log-level=debug -f gobgp.toml`
 ```bash
 docker plugin install \
   --grant-all-permissions \
-  ollijanatuinen/docker-bgp-lb:v0.4 \
+  ollijanatuinen/docker-bgp-lb:v0.5 \
   ROUTER_ID=192.168.8.40 \
   LOCAL_AS=65534 \
   PEER_ADDRESS=192.168.8.137 \
@@ -64,32 +64,33 @@ GoBGP inform about incoming BGP connection with message like this:
 ```
 
 ## Gateway bridge network
+Reconfigure [docker_gwbridge](https://docs.docker.com/engine/swarm/networking/#customize-the-docker_gwbridge):
 ```bash
+docker network rm docker_gwbridge
 docker network create \
   --driver bridge \
   --subnet 172.23.0.0/16 \
   --gateway 172.23.0.1 \
+  -o com.docker.network.bridge.name=docker_gwbridge \
   -o com.docker.network.bridge.enable_icc=false \
   -o com.docker.network.bridge.enable_ip_masquerade=false \
   --label bgplb_advertise=true \
-  bgplb_gwbridge
+  docker_gwbridge
 ```
 Label `bgplb_advertise=true` will tell bgplb driver to advertise it with BGP.
 Option `com.docker.network.bridge.enable_ip_masquerade=false` will disable NAT from outgoing connections.
 Option `com.docker.network.bridge.enable_icc=false` is optional, it will disable inter container connectivity.
 
-
 ## Creating network and starting container
 ```bash
 docker network create \
-  --driver ollijanatuinen/docker-bgp-lb:v0.4 \
-  --ipam-driver ollijanatuinen/docker-bgp-lb:v0.4 \
+  --driver ollijanatuinen/docker-bgp-lb:v0.5 \
+  --ipam-driver ollijanatuinen/docker-bgp-lb:v0.5 \
   --subnet 200.200.200.200/32 \
   example
 
 docker run -d \
   --name=example \
-  --network=bgplb_gwbridge \
   --network=example \
   --health-cmd "curl -f http://localhost/ || exit 1" \
   --health-start-period 15s \
