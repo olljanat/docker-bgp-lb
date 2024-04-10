@@ -291,6 +291,7 @@ func main() {
 		log.Errorf("Starting BGP server failed: %v", err)
 		return
 	}
+	getGwBridge()
 
 	if os.Getenv("SIGUSR2_HANDLER") == "true" {
 		log.Infof("Starting SIGUSR2 signal handler")

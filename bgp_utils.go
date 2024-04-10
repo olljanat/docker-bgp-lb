@@ -91,20 +91,20 @@ func addRoute(NetworkID, EndpointID, ipv4, ipv6 string) {
 		route := netlink.Route{Dst: ipv4Dst, LinkIndex: bridge.Attrs().Index}
 		netlink.RouteAdd(&route)
 
-		addBgpRoute(ip.String(), 32)
+		addBgpRoute(ip.String(), 32, apiGoBGP.Family_AFI_IP)
 	}
 	if ipv6 != "" {
 		ip, ipv6Dst, _ := net.ParseCIDR(ipv6)
 		route := netlink.Route{Dst: ipv6Dst, LinkIndex: bridge.Attrs().Index}
 		netlink.RouteAdd(&route)
 
-		addBgpRoute(ip.String(), 128)
+		addBgpRoute(ip.String(), 128, apiGoBGP.Family_AFI_IP6)
 	}
 
 	return
 }
 
-func addBgpRoute(prefix string, mask int) error {
+func addBgpRoute(prefix string, mask int, ipFamily apiGoBGP.Family_Afi) error {
 	nlri, _ := apb.New(&apiGoBGP.IPAddressPrefix{
 		Prefix:    prefix,
 		PrefixLen: uint32(mask),
@@ -125,7 +125,7 @@ func addBgpRoute(prefix string, mask int) error {
 	attrs := []*apb.Any{a1, a2, a3}
 	_, err := bgpServer.AddPath(context.Background(), &apiGoBGP.AddPathRequest{
 		Path: &apiGoBGP.Path{
-			Family: &apiGoBGP.Family{Afi: apiGoBGP.Family_AFI_IP, Safi: apiGoBGP.Family_SAFI_UNICAST},
+			Family: &apiGoBGP.Family{Afi: ipFamily, Safi: apiGoBGP.Family_SAFI_UNICAST},
 			Nlri:   nlri,
 			Pattrs: attrs,
 		},
@@ -147,7 +147,7 @@ func delRoute(NetworkID, EndpointID string) {
 	}
 	for _, v4route := range v4routes {
 		v4dst := &v4route.Dst.IP
-		delBgpRoute(v4dst.String(), 32)
+		delBgpRoute(v4dst.String(), 32, apiGoBGP.Family_AFI_IP)
 		if err := netlink.RouteDel(&v4route); err != nil {
 			log.Errorf("Cannot remove local route to: %v , Error: %v", v4dst.String(), err)
 		}
@@ -158,7 +158,7 @@ func delRoute(NetworkID, EndpointID string) {
 	}
 	for _, v6route := range v6routes {
 		v6dst := &v6route.Dst.IP
-		delBgpRoute(v6dst.String(), 128)
+		delBgpRoute(v6dst.String(), 128, apiGoBGP.Family_AFI_IP6)
 		if err := netlink.RouteDel(&v6route); err != nil {
 			log.Errorf("Cannot remove local route to: %v , Error: %v", v6dst.String(), err)
 		}
@@ -167,7 +167,7 @@ func delRoute(NetworkID, EndpointID string) {
 	return
 }
 
-func delBgpRoute(prefix string, mask int) error {
+func delBgpRoute(prefix string, mask int, ipFamily apiGoBGP.Family_Afi) error {
 	nlri, _ := apb.New(&apiGoBGP.IPAddressPrefix{
 		Prefix:    prefix,
 		PrefixLen: uint32(mask),
@@ -187,7 +187,7 @@ func delBgpRoute(prefix string, mask int) error {
 	})
 	attrs := []*apb.Any{a1, a2, a3}
 	p1 := &apiGoBGP.Path{
-		Family: &apiGoBGP.Family{Afi: apiGoBGP.Family_AFI_IP, Safi: apiGoBGP.Family_SAFI_UNICAST},
+		Family: &apiGoBGP.Family{Afi: ipFamily, Safi: apiGoBGP.Family_SAFI_UNICAST},
 		Nlri:   nlri,
 		Pattrs: attrs,
 	}

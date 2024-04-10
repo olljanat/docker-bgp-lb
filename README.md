@@ -1,5 +1,6 @@
 # About
 ## Prerequirements
+Even when it is not 100% mandator requirement, it is recommmended to disable Docker default bridge and iptables by using configuration like this:
 `/etc/docker/daemon.json` file:
 ```json
 {
@@ -43,7 +44,7 @@ Run with command `./gobgpd --log-level=debug -f gobgp.toml`
 ```bash
 docker plugin install \
   --grant-all-permissions \
-  ollijanatuinen/docker-bgp-lb:v0.3 \
+  ollijanatuinen/docker-bgp-lb:v0.4 \
   ROUTER_ID=192.168.8.40 \
   LOCAL_AS=65534 \
   PEER_ADDRESS=192.168.8.137 \
@@ -62,17 +63,34 @@ GoBGP inform about incoming BGP connection with message like this:
 }
 ```
 
+## Gateway bridge network
+```bash
+docker network create \
+  --driver bridge \
+  --subnet 172.23.0.0/16 \
+  --gateway 172.23.0.1 \
+  -o com.docker.network.bridge.enable_icc=false \
+  -o com.docker.network.bridge.enable_ip_masquerade=false \
+  --label bgplb_advertise=true \
+  bgplb_gwbridge
+```
+Label `bgplb_advertise=true` will tell bgplb driver to advertise it with BGP.
+Option `com.docker.network.bridge.enable_ip_masquerade=false` will disable NAT from outgoing connections.
+Option `com.docker.network.bridge.enable_icc=false` is optional, it will disable inter container connectivity.
+
+
 ## Creating network and starting container
 ```bash
 docker network create \
-  --driver ollijanatuinen/docker-bgp-lb:v0.3 \
-  --ipam-driver ollijanatuinen/docker-bgp-lb:v0.3 \
+  --driver ollijanatuinen/docker-bgp-lb:v0.4 \
+  --ipam-driver ollijanatuinen/docker-bgp-lb:v0.4 \
   --subnet 200.200.200.200/32 \
   example
 
 docker run -d \
   --name=example \
-  --net=example \
+  --network=bgplb_gwbridge \
+  --network=example \
   --health-cmd "curl -f http://localhost/ || exit 1" \
   --health-start-period 15s \
   --stop-timeout 30 \
@@ -170,8 +188,3 @@ If you installed plugin with `SIGUSR2_HANDLER=true` and started container with `
 ```
 2. Local route to `200.200.200.200/32` will be removed.
 3. After 5 seconds delay, normal container stop signal `SIGTERM` will be send to container and it will stop.
-
-# Architecture
-Combine bridge plugin from [Kathará](https://github.com/KatharaFramework/NetworkPlugin) together with [Sample IPAM plugin](https://github.com/ishantt/docker-ipam-plugin) and [GoBGP](https://github.com/osrg/gobgp/). Pure minimum implementation without any IP selection logic (=> user must tell IPs).
-
-Does NOT configure default gateway for containers which trigger Docker adding second [docker_gwbridge](https://docs.docker.com/engine/swarm/networking/#customize-the-docker_gwbridge) interface as default gateway for them which why we have use this plugin to define load balancer IPs only. Alternatively you can add second, bridge network for containers.

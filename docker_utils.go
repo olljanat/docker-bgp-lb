@@ -2,19 +2,62 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
+	apiGoBGP "github.com/osrg/gobgp/v3/api"
 )
 
 const (
-	driverName = "ollijanatuinen/docker-bgp-lb:v0.3"
+	driverName = "ollijanatuinen/docker-bgp-lb:v0.4"
 	SIGUSR2    = "12"
 )
+
+func getGwBridge() {
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		log.Errorf("getGwBridge: Cannot connect to Docker: %v", err)
+		return
+	}
+
+	networkFilter := filters.NewArgs()
+	networkFilter.Add("label", "bgplb_advertise=true")
+	options := types.NetworkListOptions{
+		Filters: networkFilter,
+	}
+	networks, err := cli.NetworkList(context.Background(), options)
+	if err != nil {
+		fmt.Errorf("getGwBridge: Error getting networks from Docker: %v\n", err)
+		return
+	}
+
+	for _, network := range networks {
+		fmt.Printf("Network name: %v\r\n", network.Name)
+		ipamConfigs := network.IPAM.Config
+		for _, ipam := range ipamConfigs {
+			_, ipnet, err := net.ParseCIDR(ipam.Subnet)
+			if err != nil {
+				fmt.Errorf("getGwBridge: Failed to parse IPAM subnet : %v\n", err)
+				return
+			}
+			mask, _ := ipnet.Mask.Size()
+			if ipnet.IP.To4() == nil && strings.Contains(ipnet.IP.String(), ":") {
+				log.Infof("Adding BGP route to local BGP LB gateway IPv6 subnet: %v/%v", ipnet.IP.String(), mask)
+				addBgpRoute(ipnet.IP.String(), mask, apiGoBGP.Family_AFI_IP6)
+			} else {
+				log.Infof("Adding BGP route to local BGP LB gateway IPv4 subnet: %v/%v", ipnet.IP.String(), mask)
+				addBgpRoute(ipnet.IP.String(), mask, apiGoBGP.Family_AFI_IP)
+			}
+		}
+	}
+}
 
 func waitContainerHealthy(networkID, endpointID string) {
 	time.Sleep(1 * time.Second)
