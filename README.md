@@ -1,13 +1,5 @@
 # About
-## Prerequirements
-Even when it is not 100% mandator requirement, it is recommmended to disable Docker default bridge and iptables by using configuration like this:
-`/etc/docker/daemon.json` file:
-```json
-{
-  "bridge": "none",
-  "iptables": false
-}
-```
+This plugin provides integration with BGP capable network devices which removes need to do outgoing NAT for containers network connectivity and provide ECMP based load balancing between multiple hosts. More information about concept can be found from [RFC 7938](https://datatracker.ietf.org/doc/html/rfc7938) and from [Meta's blog](https://engineering.fb.com/2021/05/13/data-center-engineering/bgp/).
 
 # Usage
 ## BGP router
@@ -36,7 +28,6 @@ Example config:
   [dynamic-neighbors.config]
     prefix = "192.168.8.0/24"
     peer-group = "bgp-lb"
-    auth-password = "P@ssw0rd!"
 ```
 Run with command `./gobgpd --log-level=debug -f gobgp.toml`
 
@@ -49,7 +40,6 @@ docker plugin install \
   LOCAL_AS=65534 \
   PEER_ADDRESS=192.168.8.137 \
   PEER_AS=64512 \
-  PEER_PASSWORD=P@ssw0rd! \
   SIGUSR2_HANDLER=true
 ```
 GoBGP inform about incoming BGP connection with message like this:
@@ -64,48 +54,60 @@ GoBGP inform about incoming BGP connection with message like this:
 ```
 
 ## Gateway bridge network
-Reconfigure [docker_gwbridge](https://docs.docker.com/engine/swarm/networking/#customize-the-docker_gwbridge):
+Create host specific bridge network for outgoing connectivity (Like [docker_gwbridge](https://docs.docker.com/engine/swarm/networking/#customize-the-docker_gwbridge) but for non-swarm/non-overlay workloads):
 ```bash
 docker network rm docker_gwbridge
 docker network create \
   --driver bridge \
-  --subnet 172.23.0.0/16 \
+  --subnet 172.23.0.0/24 \
   --gateway 172.23.0.1 \
   -o com.docker.network.bridge.name=docker_gwbridge \
   -o com.docker.network.bridge.enable_icc=false \
   -o com.docker.network.bridge.enable_ip_masquerade=false \
   --label bgplb_advertise=true \
-  docker_gwbridge
+  bgplb_gwbridge
 ```
 Label `bgplb_advertise=true` will tell bgplb driver to advertise it with BGP.
 Option `com.docker.network.bridge.enable_ip_masquerade=false` will disable NAT from outgoing connections.
 Option `com.docker.network.bridge.enable_icc=false` is optional, it will disable inter container connectivity.
 
-## Creating network and starting container
+## Creating LB networks and start containers
 ```bash
-docker network create \
-  --driver ollijanatuinen/docker-bgp-lb:v0.5 \
-  --ipam-driver ollijanatuinen/docker-bgp-lb:v0.5 \
-  --subnet 200.200.200.200/32 \
-  example
-
+docker network create --driver ollijanatuinen/docker-bgp-lb:v0.5 --ipam-driver ollijanatuinen/docker-bgp-lb:v0.5 --subnet 10.0.0.101/32 web1
 docker run -d \
-  --name=example \
-  --network=example \
+  --name=web1 \
+  --network=bgplb_gwbridge \
+  --network=web1 \
+  --ip 172.23.0.25 \
+  --add-host web2=172.23.0.26 \
   --health-cmd "curl -f http://localhost/ || exit 1" \
   --health-start-period 15s \
   --stop-timeout 30 \
   --stop-signal SIGUSR2 \
-  nginx
+  ollijanatuinen/debug:nginx
+
+docker network create --driver ollijanatuinen/docker-bgp-lb:v0.5 --ipam-driver ollijanatuinen/docker-bgp-lb:v0.5 --subnet 10.0.0.102/32 web2
+docker run -d \
+  --name=web2 \
+  --network=bgplb_gwbridge \
+  --network=web2 \
+  --ip 172.23.0.26 \
+  --add-host web1=172.23.0.25 \
+  --health-cmd "curl -f http://localhost/ || exit 1" \
+  --health-start-period 15s \
+  --stop-timeout 30 \
+  --stop-signal SIGUSR2 \
+  ollijanatuinen/debug:nginx
 ```
 
-After container is in "healthy" state two things will happen:
-1. New local route like this is added:
+After containers are in "healthy" state two things will happen:
+1. New local routes like this are added:
 ```
 Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
-200.200.200.200 0.0.0.0         255.255.255.255 UH    0      0        0 bgplb-f9bb8454b
+10.0.0.101 0.0.0.0         255.255.255.255 UH    0      0        0 bgplb-f9bb8454b
+10.0.0.102 0.0.0.0         255.255.255.255 UH    0      0        0 bgplb-f9bb8454c
 ```
-2. GoBGP inform about new BGP route with message like this:
+2. GoBGP inform about new BGP route with messages like this:
 ```json
 {
 	"Key": "192.168.8.40",
@@ -136,7 +138,7 @@ Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
 	"msg": "received update",
 	"nlri": [
 		{
-			"prefix": "200.200.200.200/32"
+			"prefix": "10.0.0.101/32"
 		}
 	],
 	"time": "2024-04-10T10:04:59Z",
@@ -151,7 +153,7 @@ If you installed plugin with `SIGUSR2_HANDLER=true` and started container with `
 {
 	"Data": {
 		"nlri": {
-			"prefix": "200.200.200.200/32"
+			"prefix": "10.0.0.101/32"
 		},
 		"attrs": [
 			{
@@ -187,5 +189,5 @@ If you installed plugin with `SIGUSR2_HANDLER=true` and started container with `
 	"time": "2024-04-10T10:10:28Z"
 }
 ```
-2. Local route to `200.200.200.200/32` will be removed.
+2. Local route to `10.0.0.101/32` will be removed.
 3. After 5 seconds delay, normal container stop signal `SIGTERM` will be send to container and it will stop.
