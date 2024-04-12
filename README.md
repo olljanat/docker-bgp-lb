@@ -31,6 +31,26 @@ Example config:
 ```
 Run with command `./gobgpd --log-level=debug -f gobgp.toml`
 
+## Gateway bridge network
+Create host specific bridge network for outgoing connectivity (Like [docker_gwbridge](https://docs.docker.com/engine/swarm/networking/#customize-the-docker_gwbridge) but for non-swarm/non-overlay workloads):
+```bash
+docker network create \
+  --driver bridge \
+  --subnet 172.23.0.0/24 \
+  --gateway 172.23.0.1 \
+  --ipv6 \
+  --subnet 2001:db8::0/64 \
+  --gateway 2001:db8::1 \
+  -o com.docker.network.bridge.name=bgplb_gwbridge \
+  -o com.docker.network.bridge.enable_icc=false \
+  -o com.docker.network.bridge.enable_ip_masquerade=false \
+  --label bgplb_advertise=true \
+  bgplb_gwbridge
+```
+Label `bgplb_advertise=true` will tell bgplb driver to advertise it with BGP.
+Option `com.docker.network.bridge.enable_ip_masquerade=false` will disable NAT from outgoing connections.
+Option `com.docker.network.bridge.enable_icc=false` is optional, it will disable inter container connectivity.
+
 ## Plugin installation
 ```bash
 docker plugin install \
@@ -52,26 +72,6 @@ GoBGP inform about incoming BGP connection with message like this:
 	"time": "2024-04-10T09:58:09Z"
 }
 ```
-
-## Gateway bridge network
-Create host specific bridge network for outgoing connectivity (Like [docker_gwbridge](https://docs.docker.com/engine/swarm/networking/#customize-the-docker_gwbridge) but for non-swarm/non-overlay workloads):
-```bash
-docker network create \
-  --driver bridge \
-  --subnet 172.23.0.0/24 \
-  --gateway 172.23.0.1 \
-  --ipv6 \
-  --subnet 2001:db8::0/64 \
-  --gateway 2001:db8::1 \
-  -o com.docker.network.bridge.name=bgplb_gwbridge \
-  -o com.docker.network.bridge.enable_icc=false \
-  -o com.docker.network.bridge.enable_ip_masquerade=false \
-  --label bgplb_advertise=true \
-  bgplb_gwbridge
-```
-Label `bgplb_advertise=true` will tell bgplb driver to advertise it with BGP.
-Option `com.docker.network.bridge.enable_ip_masquerade=false` will disable NAT from outgoing connections.
-Option `com.docker.network.bridge.enable_icc=false` is optional, it will disable inter container connectivity.
 
 ## Creating LB networks and start containers
 ```bash
