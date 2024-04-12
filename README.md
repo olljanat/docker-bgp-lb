@@ -35,7 +35,7 @@ Run with command `./gobgpd --log-level=debug -f gobgp.toml`
 ```bash
 docker plugin install \
   --grant-all-permissions \
-  ollijanatuinen/docker-bgp-lb:v0.5 \
+  ollijanatuinen/docker-bgp-lb:v0.6 \
   ROUTER_ID=192.168.8.40 \
   LOCAL_AS=65534 \
   PEER_ADDRESS=192.168.8.137 \
@@ -56,12 +56,14 @@ GoBGP inform about incoming BGP connection with message like this:
 ## Gateway bridge network
 Create host specific bridge network for outgoing connectivity (Like [docker_gwbridge](https://docs.docker.com/engine/swarm/networking/#customize-the-docker_gwbridge) but for non-swarm/non-overlay workloads):
 ```bash
-docker network rm docker_gwbridge
 docker network create \
   --driver bridge \
   --subnet 172.23.0.0/24 \
   --gateway 172.23.0.1 \
-  -o com.docker.network.bridge.name=docker_gwbridge \
+  --ipv6 \
+  --subnet 2001:db8::0/64 \
+  --gateway 2001:db8::1 \
+  -o com.docker.network.bridge.name=bgplb_gwbridge \
   -o com.docker.network.bridge.enable_icc=false \
   -o com.docker.network.bridge.enable_ip_masquerade=false \
   --label bgplb_advertise=true \
@@ -73,26 +75,39 @@ Option `com.docker.network.bridge.enable_icc=false` is optional, it will disable
 
 ## Creating LB networks and start containers
 ```bash
-docker network create --driver ollijanatuinen/docker-bgp-lb:v0.5 --ipam-driver ollijanatuinen/docker-bgp-lb:v0.5 --subnet 10.0.0.101/32 web1
+docker network create \
+  --driver ollijanatuinen/docker-bgp-lb:v0.6 \
+  --ipam-driver ollijanatuinen/docker-bgp-lb:v0.6 \
+  --subnet 10.0.0.101/32 \
+  --ipv6 \
+  --ipam-opt v6subnet=2001:0db8:0000:0001::101/128 \
+   web1
 docker run -d \
   --name=web1 \
   --network=bgplb_gwbridge \
   --network=web1 \
   --ip 172.23.0.25 \
-  --add-host web2=172.23.0.26 \
+  --ip6 2001:db8::25 \
+  --add-host web2=2001:0db8:0000:0001::102 \
   --health-cmd "curl -f http://localhost/ || exit 1" \
   --health-start-period 15s \
   --stop-timeout 30 \
   --stop-signal SIGUSR2 \
   ollijanatuinen/debug:nginx
 
-docker network create --driver ollijanatuinen/docker-bgp-lb:v0.5 --ipam-driver ollijanatuinen/docker-bgp-lb:v0.5 --subnet 10.0.0.102/32 web2
+docker network create \
+  --driver ollijanatuinen/docker-bgp-lb:v0.6 \
+  --ipam-driver ollijanatuinen/docker-bgp-lb:v0.6 \
+  --subnet 10.0.0.102/32 \
+  --ipv6 \
+  --ipam-opt v6subnet=2001:0db8:0000:0001::102/128 \
+   web2
 docker run -d \
   --name=web2 \
   --network=bgplb_gwbridge \
   --network=web2 \
   --ip 172.23.0.26 \
-  --add-host web1=172.23.0.25 \
+  --add-host web1=2001:0db8:0000:0001::102 \
   --health-cmd "curl -f http://localhost/ || exit 1" \
   --health-start-period 15s \
   --stop-timeout 30 \

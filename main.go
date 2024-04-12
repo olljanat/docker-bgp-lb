@@ -50,20 +50,32 @@ func (d *bgpLB) GetDefaultAddressSpaces() (*api.AddressSpacesResponse, error) {
 }
 
 func (d *bgpLB) RequestPool(r *api.RequestPoolRequest) (*api.RequestPoolResponse, error) {
-	if r.Pool == "" {
-		return &api.RequestPoolResponse{}, errors.New("Subnet is required")
+	pool := ""
+	if r.V6 {
+		if r.Options["v6subnet"] == "" {
+			return &api.RequestPoolResponse{}, errors.New("IPv6 subnet is required")
+		}
+		pool = r.Options["v6subnet"]
+	} else {
+		if r.Pool == "" {
+			return &api.RequestPoolResponse{}, errors.New("subnet is required")
+		}
+		pool = r.Pool
 	}
 
-	_, ipnet, err := net.ParseCIDR(r.Pool)
+	_, ipnet, err := net.ParseCIDR(pool)
 	if err != nil {
 		return &api.RequestPoolResponse{}, err
 	}
 	mask, _ := ipnet.Mask.Size()
-	if mask != 32 {
-		return &api.RequestPoolResponse{}, errors.New("Only subnet mask /32 is supported")
+	if !r.V6 && mask != 32 {
+		return &api.RequestPoolResponse{}, errors.New("only subnet mask /32 is supported")
+	}
+	if r.V6 && mask != 128 {
+		return &api.RequestPoolResponse{}, errors.New("only subnet mask /128 is supported")
 	}
 
-	return &api.RequestPoolResponse{PoolID: r.Pool, Pool: r.Pool}, nil
+	return &api.RequestPoolResponse{PoolID: pool, Pool: pool}, nil
 }
 
 func (d *bgpLB) RequestAddress(r *api.RequestAddressRequest) (*api.RequestAddressResponse, error) {

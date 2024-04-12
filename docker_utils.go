@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	driverName = "ollijanatuinen/docker-bgp-lb:v0.5"
+	driverName = "ollijanatuinen/docker-bgp-lb:v0.6"
 	SIGUSR2    = "12"
 )
 
