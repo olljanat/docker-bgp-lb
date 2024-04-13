@@ -36,11 +36,11 @@ Create host specific bridge network for outgoing connectivity (Like [docker_gwbr
 ```bash
 docker network create \
   --driver bridge \
-  --subnet 172.23.0.0/24 \
-  --gateway 172.23.0.1 \
+  --subnet 172.23.1.0/24 \
+  --gateway 172.23.1.1 \
   --ipv6 \
-  --subnet 2001:db8::0/64 \
-  --gateway 2001:db8::1 \
+  --subnet 2001:0db8:0000:1001::/64 \
+  --gateway 2001:0db8:0000:1001::1 \
   -o com.docker.network.bridge.name=bgplb_gwbridge \
   -o com.docker.network.bridge.enable_icc=false \
   -o com.docker.network.bridge.enable_ip_masquerade=false \
@@ -55,7 +55,7 @@ Option `com.docker.network.bridge.enable_icc=false` is optional, it will disable
 ```bash
 docker plugin install \
   --grant-all-permissions \
-  ollijanatuinen/docker-bgp-lb:v0.6 \
+  ollijanatuinen/docker-bgp-lb:v0.7 \
   ROUTER_ID=192.168.8.40 \
   LOCAL_AS=65534 \
   PEER_ADDRESS=192.168.8.137 \
@@ -76,19 +76,19 @@ GoBGP inform about incoming BGP connection with message like this:
 ## Creating LB networks and start containers
 ```bash
 docker network create \
-  --driver ollijanatuinen/docker-bgp-lb:v0.6 \
-  --ipam-driver ollijanatuinen/docker-bgp-lb:v0.6 \
+  --driver ollijanatuinen/docker-bgp-lb:v0.7 \
+  --ipam-driver ollijanatuinen/docker-bgp-lb:v0.7 \
   --subnet 10.0.0.101/32 \
   --ipv6 \
-  --ipam-opt v6subnet=2001:0db8:0000:0001::101/128 \
+  --ipam-opt v6subnet=2001:0db8:0000:1000::101/128 \
    web1
 docker run -d \
   --name=web1 \
   --network=bgplb_gwbridge \
   --network=web1 \
   --ip 172.23.0.25 \
-  --ip6 2001:db8::25 \
-  --add-host web2=2001:0db8:0000:0001::102 \
+  --ip6 2001:0db8:0000:1001::25 \
+  --add-host web2=2001:0db8:0000:1000::102 \
   --health-cmd "curl -f http://localhost/ || exit 1" \
   --health-start-period 15s \
   --stop-timeout 30 \
@@ -96,18 +96,19 @@ docker run -d \
   ollijanatuinen/debug:nginx
 
 docker network create \
-  --driver ollijanatuinen/docker-bgp-lb:v0.6 \
-  --ipam-driver ollijanatuinen/docker-bgp-lb:v0.6 \
+  --driver ollijanatuinen/docker-bgp-lb:v0.7 \
+  --ipam-driver ollijanatuinen/docker-bgp-lb:v0.7 \
   --subnet 10.0.0.102/32 \
   --ipv6 \
-  --ipam-opt v6subnet=2001:0db8:0000:0001::102/128 \
+  --ipam-opt v6subnet=2001:0db8:0000:1000::102/128 \
    web2
 docker run -d \
   --name=web2 \
   --network=bgplb_gwbridge \
   --network=web2 \
   --ip 172.23.0.26 \
-  --add-host web1=2001:0db8:0000:0001::102 \
+  --ip6 2001:0db8:0000:1001::26 \
+  --add-host web1=2001:0db8:0000:1000::101 \
   --health-cmd "curl -f http://localhost/ || exit 1" \
   --health-start-period 15s \
   --stop-timeout 30 \
@@ -121,6 +122,10 @@ After containers are in "healthy" state two things will happen:
 Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
 10.0.0.101 0.0.0.0         255.255.255.255 UH    0      0        0 bgplb-f9bb8454b
 10.0.0.102 0.0.0.0         255.255.255.255 UH    0      0        0 bgplb-f9bb8454c
+
+Destination                    Next Hop                   Flag Met Ref Use If
+2001:db8:0:1::101/128          ::                         U    1024 3     0 bgplb-f9bb8454b
+2001:db8:0:1::101/128          ::                         U    1024 3     0 bgplb-f9bb8454c
 ```
 2. GoBGP inform about new BGP route with messages like this:
 ```json
@@ -206,3 +211,49 @@ If you installed plugin with `SIGUSR2_HANDLER=true` and started container with `
 ```
 2. Local route to `10.0.0.101/32` will be removed.
 3. After 5 seconds delay, normal container stop signal `SIGTERM` will be send to container and it will stop.
+
+## Docker Swarm
+### Preparation
+In Swarm mode we only define our load balancer subnet for services.
+Docker will automatically add `docker_gwbridge` as second network for them which those containers uses for outgoing traffic.
+To make those connections also using routed connectivity without NAT, we need reconfigure that network like described in [here](https://docs.docker.com/engine/swarm/networking/#customize-the-docker_gwbridge).
+```bash
+docker network rm docker_gwbridge
+docker network create \
+  --driver bridge \
+  --subnet 172.23.2.0/24 \
+  --gateway 172.23.2.1 \
+  --ipv6 \
+  --subnet 2001:0db8:0000:1002::/64 \
+  --gateway 2001:0db8:0000:1002::1 \
+  -o com.docker.network.bridge.name=docker_gwbridge \
+  -o com.docker.network.bridge.enable_icc=false \
+  -o com.docker.network.bridge.enable_ip_masquerade=false \
+  --label bgplb_advertise=true \
+  docker_gwbridge
+```
+**Note!** It is easiest to do this when node is not yet as part of swarm because other why you need remove and recreate also ingress network which affects all nodes same time (however, we are not actually using ingress at all in this configuration).
+On current implementation, on this point you also need disable and re-enable bgp-lb plugin to trigger that network BGP advertise.
+
+### Deployment
+In Swarm mode we want to give two extra parameters:
+* `--endpoint-mode=dnsrr` which disables VIP reservation done by Swarm so our IP address gets allocated directly to container.
+* `--mode=global` which makes one replica of container running on every node in Swarm which have bgp-lb plugin installed.
+  * This is where BGP-LB shows its power because all of those nodes will start advertising our load balancer IPs with BGP.
+  * You can still limit this to certain nodes with `--constraint` parameter.
+```bash
+docker network create \
+  --driver ollijanatuinen/docker-bgp-lb:v0.7 \
+  --ipam-driver ollijanatuinen/docker-bgp-lb:v0.7 \
+  --subnet 10.0.0.103/32 \
+  --ipv6 \
+  --ipam-opt v6subnet=2001:0db8:0000:1000::103/128 \
+   web
+
+docker service create \
+  --name web \
+  --network=web \
+  --endpoint-mode=dnsrr \
+  --mode=global \
+  ollijanatuinen/debug:nginx
+```

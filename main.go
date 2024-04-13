@@ -312,7 +312,7 @@ func main() {
 
 	log.Infof("Starting Docker BGP LB Plugin")
 	d := &bgpLB{
-		scope:    "local",
+		scope:    "global",
 		networks: map[string]*bgpNetwork{},
 	}
 	h := api.NewHandler(d)
