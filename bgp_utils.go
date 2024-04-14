@@ -92,13 +92,17 @@ func addRoute(NetworkID, EndpointID, ipv4, ipv6 string) {
 	}
 	if ipv4 != "" {
 		ip, ipv4Dst, _ := net.ParseCIDR(ipv4)
-		route := netlink.Route{Dst: ipv4Dst, LinkIndex: bridge.Attrs().Index}
-		netlink.RouteAdd(&route)
+		if ip.String() != "0.0.0.0" {
+			log.Debugf("Adding IPv4 route to %s", ipv4Dst)
+			route := netlink.Route{Dst: ipv4Dst, LinkIndex: bridge.Attrs().Index}
+			netlink.RouteAdd(&route)
 
-		addBgpRoute(ip.String(), 32, apiGoBGP.Family_AFI_IP)
+			addBgpRoute(ip.String(), 32, apiGoBGP.Family_AFI_IP)
+		}
 	}
 	if ipv6 != "" {
 		ip, ipv6Dst, _ := net.ParseCIDR(ipv6)
+		log.Debugf("Adding IPv6 route to %s", ipv6Dst)
 		route := netlink.Route{Dst: ipv6Dst, LinkIndex: bridge.Attrs().Index}
 		netlink.RouteAdd(&route)
 

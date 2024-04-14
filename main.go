@@ -58,7 +58,7 @@ func (d *bgpLB) RequestPool(r *api.RequestPoolRequest) (*api.RequestPoolResponse
 		pool = r.Options["v6subnet"]
 	} else {
 		if r.Pool == "" {
-			return &api.RequestPoolResponse{}, errors.New("subnet is required")
+			return &api.RequestPoolResponse{PoolID: "0.0.0.0/32", Pool: "0.0.0.0/32"}, nil
 		}
 		pool = r.Pool
 	}

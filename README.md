@@ -55,7 +55,7 @@ Option `com.docker.network.bridge.enable_icc=false` is optional, it will disable
 ```bash
 docker plugin install \
   --grant-all-permissions \
-  ollijanatuinen/docker-bgp-lb:v0.8 \
+  ollijanatuinen/docker-bgp-lb:v0.9 \
   ROUTER_ID=192.168.8.40 \
   LOCAL_AS=65534 \
   PEER_ADDRESS=192.168.8.137 \
@@ -76,8 +76,8 @@ GoBGP inform about incoming BGP connection with message like this:
 ## Creating LB networks and start containers
 ```bash
 docker network create \
-  --driver ollijanatuinen/docker-bgp-lb:v0.8 \
-  --ipam-driver ollijanatuinen/docker-bgp-lb:v0.8 \
+  --driver ollijanatuinen/docker-bgp-lb:v0.9 \
+  --ipam-driver ollijanatuinen/docker-bgp-lb:v0.9 \
   --subnet 10.0.0.101/32 \
   --ipv6 \
   --ipam-opt v6subnet=2001:0db8:0000:1000::101/128 \
@@ -96,8 +96,8 @@ docker run -d \
   ollijanatuinen/debug:nginx
 
 docker network create \
-  --driver ollijanatuinen/docker-bgp-lb:v0.8 \
-  --ipam-driver ollijanatuinen/docker-bgp-lb:v0.8 \
+  --driver ollijanatuinen/docker-bgp-lb:v0.9 \
+  --ipam-driver ollijanatuinen/docker-bgp-lb:v0.9 \
   --subnet 10.0.0.102/32 \
   --ipv6 \
   --ipam-opt v6subnet=2001:0db8:0000:1000::102/128 \
@@ -243,8 +243,8 @@ In Swarm mode we want to give two extra parameters:
   * You can still limit this to certain nodes with `--constraint` parameter.
 ```bash
 docker network create \
-  --driver ollijanatuinen/docker-bgp-lb:v0.8 \
-  --ipam-driver ollijanatuinen/docker-bgp-lb:v0.8 \
+  --driver ollijanatuinen/docker-bgp-lb:v0.9 \
+  --ipam-driver ollijanatuinen/docker-bgp-lb:v0.9 \
   --subnet 10.0.0.103/32 \
   --ipv6 \
   --ipam-opt v6subnet=2001:0db8:0000:1000::103/128 \
@@ -257,3 +257,9 @@ docker service create \
   --mode=global \
   ollijanatuinen/debug:nginx
 ```
+
+## IPv6 only mode
+Docker does not currently support disabling IPv4 which why yours containers always has IPv4 address in `bgplb_gwbridge` and `docker_gwbridge` networks.
+However, you can skip configuring by IPv4 address for load balancing interface by simply skipping `--subnet` parameter when creating load balancing subnet and only specify `--ipam-opt v6subnet=`
+
+Technically network will still have `0.0.0.0/32` configured as IPv4 subnet and it will get assigned to containers but Linux ignore it and this plugin will not advertise it with BGP.
