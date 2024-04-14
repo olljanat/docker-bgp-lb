@@ -24,6 +24,12 @@ func startBgpServer() error {
 		return fmt.Errorf("Environment variable ROUTER_ID is required\r\n")
 	}
 
+	routerPortInt, err := strconv.Atoi(os.Getenv("ROUTER_PORT"))
+	if err != nil {
+		return fmt.Errorf("Environment variable ROUTER_PORT value is invalid\r\n")
+	}
+	routerPort := int32(routerPortInt)
+
 	localAsInt, err := strconv.Atoi(os.Getenv("LOCAL_AS"))
 	if err != nil {
 		return fmt.Errorf("Environment variable LOCAL_AS value is invalid\r\n")
@@ -49,7 +55,7 @@ func startBgpServer() error {
 		Global: &apiGoBGP.Global{
 			RouterId:   routerid,
 			Asn:        localAs,
-			ListenPort: -1, // Passive mode, do not listen incoming BGP
+			ListenPort: routerPort,
 		},
 	})
 	if err != nil {

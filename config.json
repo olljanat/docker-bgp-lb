@@ -1,10 +1,10 @@
 {
-    "description": "BGP Load Balancing Plugin",
-    "documentation": "https://docs.docker.com/engine/extend/config/",
-    "entrypoint": [
-        "/docker-bgp-lb"
-    ],
-    "env": [
+	"description": "BGP Load Balancing Plugin",
+	"documentation": "https://docs.docker.com/engine/extend/config/",
+	"entrypoint": [
+		"/docker-bgp-lb"
+	],
+	"env": [
 		{
 			"name": "ROUTER_ID",
 			"description": "Router ID",
@@ -12,6 +12,14 @@
 				"value"
 			],
 			"value": ""
+		},
+		{
+			"name": "ROUTER_PORT",
+			"description": "Router port",
+			"settable": [
+				"value"
+			],
+			"value": "-1"
 		},
 		{
 			"name": "LOCAL_AS",
@@ -53,33 +61,33 @@
 			],
 			"value": "false"
 		}
-    ],
-    "mounts": [
-        {
-            "destination": "/var/run/docker.sock",
-            "name": "var_run_docker_sock",
-            "options": [
-                "rbind"
-            ],
-            "source": "/var/run/docker.sock",
-            "type": "bind"
-        }
 	],
-    "interface": {
-        "socket": "/bgplb.sock",
-        "types": [
-            "docker.ipamdriver/1.0",
-            "docker.networkdriver/1.0"
-        ]
-    },
-    "linux": {
-        "capabilities": [
-            "CAP_SYS_ADMIN",
-            "CAP_NET_ADMIN",
-            "CAP_NET_RAW"
-        ]
-    },
-    "network": {
-        "type": "host"
+	"mounts": [
+		{
+			"destination": "/var/run/docker.sock",
+			"name": "var_run_docker_sock",
+			"options": [
+				"rbind"
+			],
+			"source": "/var/run/docker.sock",
+			"type": "bind"
+		}
+	],
+	"interface": {
+		"socket": "/bgplb.sock",
+		"types": [
+			"docker.ipamdriver/1.0",
+			"docker.networkdriver/1.0"
+		]
+	},
+	"linux": {
+		"capabilities": [
+			"CAP_SYS_ADMIN",
+			"CAP_NET_ADMIN",
+			"CAP_NET_RAW"
+		]
+	},
+	"network": {
+		"type": "host"
 	}
 }
