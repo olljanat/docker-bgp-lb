@@ -99,19 +99,19 @@ func deleteBridge(netID string) error {
 func attachInterfaceToBridge(bridgeName string, interfaceName string) error {
 	bridge, err := netlink.LinkByName(bridgeName)
 	if err != nil {
-		return err
+		return fmt.Errorf("attachInterfaceToBridge: failed to check bridge interface existence: %v", err)
 	}
 
 	iface, err := netlink.LinkByName(interfaceName)
 	if err != nil {
-		return err
+		return fmt.Errorf("attachInterfaceToBridge: failed to check interface existence: %v", err)
 	}
 
 	if err := netlink.LinkSetMaster(iface, bridge); err != nil {
-		return err
+		return fmt.Errorf("attachInterfaceToBridge: failed to set link master: %v", err)
 	}
 	if err := netlink.LinkSetUp(iface); err != nil {
-		return err
+		return fmt.Errorf("attachInterfaceToBridge: failed to start link: %v", err)
 	}
 
 	return nil

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os"
 	"strings"
 	"time"
 
@@ -16,15 +15,18 @@ import (
 )
 
 const (
-	driverName = "ollijanatuinen/docker-bgp-lb:v0.9"
+	driverName = "ollijanatuinen/docker-bgp-lb:v1.0"
 	SIGUSR2    = "12"
 )
 
 func getGwBridge() {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		log.Errorf("getGwBridge: Cannot connect to Docker: %v", err)
-		return
+	cli, _ := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	err := fmt.Errorf("run once")
+	for err != nil {
+		_, err = cli.ServerVersion(context.Background())
+		if err != nil {
+			time.Sleep(time.Second * 1)
+		}
 	}
 
 	networkFilter := filters.NewArgs()
@@ -34,7 +36,7 @@ func getGwBridge() {
 	}
 	networks, err := cli.NetworkList(context.Background(), options)
 	if err != nil {
-		fmt.Errorf("getGwBridge: Error getting networks from Docker: %v\n", err)
+		log.Errorf("getGwBridge: Error getting networks from Docker: %v\n", err)
 		return
 	}
 
@@ -44,7 +46,7 @@ func getGwBridge() {
 		for _, ipam := range ipamConfigs {
 			_, ipnet, err := net.ParseCIDR(ipam.Subnet)
 			if err != nil {
-				fmt.Errorf("getGwBridge: Failed to parse IPAM subnet : %v\n", err)
+				log.Errorf("getGwBridge: Failed to parse IPAM subnet : %v\n", err)
 				return
 			}
 			mask, _ := ipnet.Mask.Size()
@@ -95,10 +97,13 @@ func waitContainerHealthy(networkID, endpointID string) {
 }
 
 func watchDockerStopEvents() {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		log.Errorf("watchDockerEvents: Error creating Docker client: %v\n", err)
-		os.Exit(1)
+	cli, _ := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	err := fmt.Errorf("run once")
+	for err != nil {
+		_, err = cli.ServerVersion(context.Background())
+		if err != nil {
+			time.Sleep(time.Second * 1)
+		}
 	}
 
 	eventFilter := filters.NewArgs()

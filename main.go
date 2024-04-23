@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"net"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 var scs = spew.ConfigState{Indent: "  "}
 var log = logrus.Logger{}
+var stateFile = "/bgplb.json"
 
 type bgpLBEndpoint struct {
 	macAddress  net.HardwareAddr
@@ -28,7 +30,7 @@ type bgpNetwork struct {
 
 type bgpLB struct {
 	scope    string
-	networks map[string]*bgpNetwork
+	Networks map[string]*bgpNetwork
 	sync.Mutex
 }
 
@@ -98,7 +100,7 @@ func (d *bgpLB) CreateNetwork(r *api.CreateNetworkRequest) error {
 	d.Lock()
 	defer d.Unlock()
 
-	if _, ok := d.networks[r.NetworkID]; ok {
+	if _, ok := d.Networks[r.NetworkID]; ok {
 		return types.ForbiddenErrorf("network %s exists", r.NetworkID)
 	}
 
@@ -112,7 +114,11 @@ func (d *bgpLB) CreateNetwork(r *api.CreateNetworkRequest) error {
 		endpoints:  make(map[string]*bgpLBEndpoint),
 	}
 
-	d.networks[r.NetworkID] = bgpNetwork
+	d.Networks[r.NetworkID] = bgpNetwork
+	err = d.save()
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -122,7 +128,7 @@ func (d *bgpLB) DeleteNetwork(r *api.DeleteNetworkRequest) error {
 	defer d.Unlock()
 
 	/* Skip if not in map */
-	if _, ok := d.networks[r.NetworkID]; !ok {
+	if _, ok := d.Networks[r.NetworkID]; !ok {
 		return nil
 	}
 
@@ -131,7 +137,11 @@ func (d *bgpLB) DeleteNetwork(r *api.DeleteNetworkRequest) error {
 		return err
 	}
 
-	delete(d.networks, r.NetworkID)
+	delete(d.Networks, r.NetworkID)
+	err = d.save()
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -149,7 +159,7 @@ func (d *bgpLB) CreateEndpoint(r *api.CreateEndpointRequest) (*api.CreateEndpoin
 	defer d.Unlock()
 
 	/* Throw error if not in map */
-	if _, ok := d.networks[r.NetworkID]; !ok {
+	if _, ok := d.Networks[r.NetworkID]; !ok {
 		return nil, types.ForbiddenErrorf("%s network does not exist", r.NetworkID)
 	}
 
@@ -160,7 +170,7 @@ func (d *bgpLB) CreateEndpoint(r *api.CreateEndpointRequest) (*api.CreateEndpoin
 		macAddress: parsedMac,
 	}
 
-	d.networks[r.NetworkID].endpoints[r.EndpointID] = endpoint
+	d.Networks[r.NetworkID].endpoints[r.EndpointID] = endpoint
 
 	resp := &api.CreateEndpointResponse{
 		Interface: intfInfo,
@@ -177,15 +187,15 @@ func (d *bgpLB) DeleteEndpoint(r *api.DeleteEndpointRequest) error {
 	defer d.Unlock()
 
 	/* Skip if not in map (both network and endpoint) */
-	if _, netOk := d.networks[r.NetworkID]; !netOk {
+	if _, netOk := d.Networks[r.NetworkID]; !netOk {
 		return nil
 	}
 
-	if _, epOk := d.networks[r.NetworkID].endpoints[r.EndpointID]; !epOk {
+	if _, epOk := d.Networks[r.NetworkID].endpoints[r.EndpointID]; !epOk {
 		return nil
 	}
 
-	delete(d.networks[r.NetworkID].endpoints, r.EndpointID)
+	delete(d.Networks[r.NetworkID].endpoints, r.EndpointID)
 
 	return nil
 }
@@ -195,15 +205,15 @@ func (d *bgpLB) EndpointInfo(r *api.InfoRequest) (*api.InfoResponse, error) {
 	defer d.Unlock()
 
 	/* Throw error (both network and endpoint) */
-	if _, netOk := d.networks[r.NetworkID]; !netOk {
+	if _, netOk := d.Networks[r.NetworkID]; !netOk {
 		return nil, types.ForbiddenErrorf("%s network does not exist", r.NetworkID)
 	}
 
-	if _, epOk := d.networks[r.NetworkID].endpoints[r.EndpointID]; !epOk {
+	if _, epOk := d.Networks[r.NetworkID].endpoints[r.EndpointID]; !epOk {
 		return nil, types.ForbiddenErrorf("%s endpoint does not exist", r.NetworkID)
 	}
 
-	endpointInfo := d.networks[r.NetworkID].endpoints[r.EndpointID]
+	endpointInfo := d.Networks[r.NetworkID].endpoints[r.EndpointID]
 	value := make(map[string]string)
 
 	value["ip_address"] = ""
@@ -222,26 +232,26 @@ func (d *bgpLB) Join(r *api.JoinRequest) (*api.JoinResponse, error) {
 	defer d.Unlock()
 
 	/* Throw error (both network and endpoint) */
-	if _, netOk := d.networks[r.NetworkID]; !netOk {
+	if _, netOk := d.Networks[r.NetworkID]; !netOk {
 		return nil, types.ForbiddenErrorf("%s network does not exist", r.NetworkID)
 	}
 
-	if _, epOk := d.networks[r.NetworkID].endpoints[r.EndpointID]; !epOk {
+	if _, epOk := d.Networks[r.NetworkID].endpoints[r.EndpointID]; !epOk {
 		return nil, types.ForbiddenErrorf("%s endpoint does not exist", r.NetworkID)
 	}
 
-	endpointInfo := d.networks[r.NetworkID].endpoints[r.EndpointID]
+	endpointInfo := d.Networks[r.NetworkID].endpoints[r.EndpointID]
 	vethInside, vethOutside, err := createVethPair(endpointInfo.macAddress)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := attachInterfaceToBridge(d.networks[r.NetworkID].bridgeName, vethOutside); err != nil {
+	if err := attachInterfaceToBridge(d.Networks[r.NetworkID].bridgeName, vethOutside); err != nil {
 		return nil, err
 	}
 
-	d.networks[r.NetworkID].endpoints[r.EndpointID].vethInside = vethInside
-	d.networks[r.NetworkID].endpoints[r.EndpointID].vethOutside = vethOutside
+	d.Networks[r.NetworkID].endpoints[r.EndpointID].vethInside = vethInside
+	d.Networks[r.NetworkID].endpoints[r.EndpointID].vethOutside = vethOutside
 
 	resp := &api.JoinResponse{
 		InterfaceName: api.InterfaceName{
@@ -258,17 +268,17 @@ func (d *bgpLB) Leave(r *api.LeaveRequest) error {
 	defer d.Unlock()
 
 	/* Throw error (both network and endpoint) */
-	if _, netOk := d.networks[r.NetworkID]; !netOk {
+	if _, netOk := d.Networks[r.NetworkID]; !netOk {
 		return types.ForbiddenErrorf("%s network does not exist", r.NetworkID)
 	}
 
-	if _, epOk := d.networks[r.NetworkID].endpoints[r.EndpointID]; !epOk {
+	if _, epOk := d.Networks[r.NetworkID].endpoints[r.EndpointID]; !epOk {
 		return types.ForbiddenErrorf("%s endpoint does not exist", r.NetworkID)
 	}
 
 	delRoute(r.NetworkID, r.EndpointID)
 
-	endpointInfo := d.networks[r.NetworkID].endpoints[r.EndpointID]
+	endpointInfo := d.Networks[r.NetworkID].endpoints[r.EndpointID]
 
 	if err := deleteVethPair(endpointInfo.vethOutside); err != nil {
 		return err
@@ -293,6 +303,27 @@ func (d *bgpLB) RevokeExternalConnectivity(r *api.RevokeExternalConnectivityRequ
 	return nil
 }
 
+func (d *bgpLB) save() error {
+	data, err := json.Marshal(d)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(stateFile, data, 0644)
+}
+
+func load() (*bgpLB, error) {
+	data, err := os.ReadFile(stateFile)
+	if err != nil {
+		return nil, err
+	}
+	var b bgpLB
+	if err := json.Unmarshal(data, &b); err != nil {
+		return nil, err
+	}
+	b.scope = "global"
+	return &b, nil
+}
+
 func main() {
 	log = *logrus.New()
 	log.SetLevel(logrus.DebugLevel)
@@ -303,7 +334,7 @@ func main() {
 		log.Errorf("Starting BGP server failed: %v", err)
 		return
 	}
-	getGwBridge()
+	go getGwBridge()
 
 	if os.Getenv("SIGUSR2_HANDLER") == "true" {
 		log.Infof("Starting SIGUSR2 signal handler")
@@ -311,10 +342,24 @@ func main() {
 	}
 
 	log.Infof("Starting Docker BGP LB Plugin")
-	d := &bgpLB{
-		scope:    "global",
-		networks: map[string]*bgpNetwork{},
+	d, err := load()
+	if err != nil {
+		log.Println("Failed to load data, starting with an empty configuration:", err)
+		d = &bgpLB{
+			scope:    "global",
+			Networks: make(map[string]*bgpNetwork),
+		}
 	}
+
+	// FixMe: Re-create bridges, restore subnets, etc in here
+	for id, network := range d.Networks {
+		if _, err := createBridge(id); err != nil {
+			log.Printf("Failed to create bridge for network %s: %v", id, err)
+		}
+		network.bridgeName = getBridgeName(id)
+		network.endpoints = make(map[string]*bgpLBEndpoint)
+	}
+
 	h := api.NewHandler(d)
 	if err = h.ServeUnix("bgplb", 0); err != nil {
 		log.Errorf("ServeUnix failed: %v", err)
