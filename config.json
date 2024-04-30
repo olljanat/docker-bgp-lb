@@ -27,7 +27,7 @@
 			"settable": [
 				"value"
 			],
-			"value": ""
+			"value": "64512"
 		},
 		{
 			"name": "PEER_ADDRESS",

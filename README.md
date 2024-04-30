@@ -10,7 +10,7 @@ Download [GoBGP](https://github.com/osrg/gobgp) binary.
 Example config:
 ```toml
 [global.config]
-  as = 64512
+  as = 65500
   router-id = "192.168.8.137"
 
 [[peer-groups]]
@@ -55,11 +55,10 @@ Option `com.docker.network.bridge.enable_icc=false` is optional, it will disable
 ```bash
 docker plugin install \
   --grant-all-permissions \
-  ollijanatuinen/docker-bgp-lb:v1.0 \
+  ollijanatuinen/docker-bgp-lb:v1.1 \
   ROUTER_ID=192.168.8.40 \
-  LOCAL_AS=65534 \
   PEER_ADDRESS=192.168.8.137 \
-  PEER_AS=64512 \
+  PEER_AS=65500 \
   SIGUSR2_HANDLER=true
 ```
 GoBGP inform about incoming BGP connection with message like this:
@@ -76,8 +75,8 @@ GoBGP inform about incoming BGP connection with message like this:
 ## Creating LB networks and start containers
 ```bash
 docker network create \
-  --driver ollijanatuinen/docker-bgp-lb:v1.0 \
-  --ipam-driver ollijanatuinen/docker-bgp-lb:v1.0 \
+  --driver ollijanatuinen/docker-bgp-lb:v1.1 \
+  --ipam-driver ollijanatuinen/docker-bgp-lb:v1.1 \
   --subnet 10.0.0.101/32 \
   --ipv6 \
   --ipam-opt v6subnet=2001:0db8:0000:1000::101/128 \
@@ -96,8 +95,8 @@ docker run -d \
   ollijanatuinen/debug:nginx
 
 docker network create \
-  --driver ollijanatuinen/docker-bgp-lb:v1.0 \
-  --ipam-driver ollijanatuinen/docker-bgp-lb:v1.0 \
+  --driver ollijanatuinen/docker-bgp-lb:v1.1 \
+  --ipam-driver ollijanatuinen/docker-bgp-lb:v1.1 \
   --subnet 10.0.0.102/32 \
   --ipv6 \
   --ipam-opt v6subnet=2001:0db8:0000:1000::102/128 \
@@ -144,7 +143,7 @@ Destination                    Next Hop                   Flag Met Ref Use If
 					"segment_type": 2,
 					"num": 1,
 					"asns": [
-						65534
+						64512
 					]
 				}
 			]
@@ -187,7 +186,7 @@ If you installed plugin with `SIGUSR2_HANDLER=true` and started container with `
 						"segment_type": 2,
 						"num": 1,
 						"asns": [
-							65534
+							64512
 						]
 					}
 				]
@@ -243,8 +242,8 @@ In Swarm mode we want to give two extra parameters:
   * You can still limit this to certain nodes with `--constraint` parameter.
 ```bash
 docker network create \
-  --driver ollijanatuinen/docker-bgp-lb:v1.0 \
-  --ipam-driver ollijanatuinen/docker-bgp-lb:v1.0 \
+  --driver ollijanatuinen/docker-bgp-lb:v1.1 \
+  --ipam-driver ollijanatuinen/docker-bgp-lb:v1.1 \
   --subnet 10.0.0.103/32 \
   --ipv6 \
   --ipam-opt v6subnet=2001:0db8:0000:1000::103/128 \
