@@ -263,3 +263,9 @@ Docker does not currently support disabling IPv4 which why yours containers alwa
 However, you can skip configuring by IPv4 address for load balancing interface by simply skipping `--subnet` parameter when creating load balancing subnet and only specify `--ipam-opt v6subnet=`
 
 Technically network will still have `0.0.0.0/32` configured as IPv4 subnet and it will get assigned to containers but Linux ignore it and this plugin will not advertise it with BGP.
+
+# Troubleshooting
+BGP configuration is a bit tricky to get correctly done which why you might notice that it does not work with first try.
+
+You can capture BGP messages with tcpdump like this `tcpdump -i eth0 port 179 -n -vvv -s 65535 -w bgp-debug.pcap` and then investigate those with Wireshark.
+Look [this](https://knowledgebase.paloaltonetworks.com/KCSArticleDetail?id=kA10g000000ClhtCAC) example how to look those messages and [this section](https://datatracker.ietf.org/doc/html/rfc4271#section-4.5) of RFC about what are explanations for those errors.
