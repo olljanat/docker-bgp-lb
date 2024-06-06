@@ -60,6 +60,14 @@
 				"value"
 			],
 			"value": ""
+		},
+		{
+			"name": "GLOBAL_SCOPE",
+			"description": "Use global scope for networks created with this driver",
+			"settable": [
+				"value"
+			],
+			"value": "false"
 		}
 	],
 	"mounts": [

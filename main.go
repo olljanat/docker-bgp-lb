@@ -16,6 +16,7 @@ import (
 var scs = spew.ConfigState{Indent: "  "}
 var log = logrus.Logger{}
 var stateFile = "/bgplb.json"
+var driverScope = "local"
 
 type bgpLBEndpoint struct {
 	macAddress  net.HardwareAddr
@@ -320,7 +321,7 @@ func load() (*bgpLB, error) {
 	if err := json.Unmarshal(data, &b); err != nil {
 		return nil, err
 	}
-	b.scope = "global"
+	b.scope = driverScope
 	return &b, nil
 }
 
@@ -341,12 +342,16 @@ func main() {
 		go watchDockerStopEvents()
 	}
 
+	if os.Getenv("GLOBAL_SCOPE") == "true" {
+		driverScope = "global"
+	}
+
 	log.Infof("Starting Docker BGP LB Plugin")
 	d, err := load()
 	if err != nil {
 		log.Println("Failed to load data, starting with an empty configuration:", err)
 		d = &bgpLB{
-			scope:    "global",
+			scope:    driverScope,
 			Networks: make(map[string]*bgpNetwork),
 		}
 	}

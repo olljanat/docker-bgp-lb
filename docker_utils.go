@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	driverName = "ollijanatuinen/docker-bgp-lb:v1.1"
+	driverName = "ollijanatuinen/docker-bgp-lb:v1.2"
 	SIGUSR2    = "12"
 )
 
@@ -128,6 +128,7 @@ func watchDockerStopEvents() {
 	}
 }
 
+// TODO: Potential memory leak in here
 func stopContainer(containerID string, cli *client.Client) {
 	log.Infof("SIGUSR2 signal received from container ID %s, deleting BGP route(s)", containerID)
 	delContainerRoutes(containerID, cli)
