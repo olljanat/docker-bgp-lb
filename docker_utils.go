@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	driverName = "ollijanatuinen/docker-bgp-lb:v1.2"
+	driverName = "ollijanatuinen/docker-bgp-lb:v1.3"
 	SIGUSR2    = "12"
 )
 
@@ -61,7 +61,7 @@ func getGwBridge() {
 	}
 }
 
-func waitContainerHealthy(networkID, endpointID string) {
+func waitContainerHealthy(networkID, endpointID string) bool {
 	time.Sleep(1 * time.Second)
 	for {
 		cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
@@ -74,22 +74,38 @@ func waitContainerHealthy(networkID, endpointID string) {
 			log.Errorf("Cannot inspect network: %v", err)
 		}
 
+		if len(network.Containers) == 0 {
+			log.Errorf("No containers found from network %s, skipping BGP route", network.Name)
+			return false
+		}
+
 		for containerID, endpoint := range network.Containers {
 			if endpoint.EndpointID == endpointID {
 				container, _ := cli.ContainerInspect(context.Background(), containerID)
+				log.Infof("waitContainerHealthy, waiting container %s", container.Name)
 				if container.State != nil {
 					if container.State.Health != nil {
 						if container.State.Health.Status == "healthy" {
 							log.Infof("Container %s healthy, adding BGP route(s)", container.Name)
-							return
+							return true
+						}
+						if container.State.Health.Status == "unhealthy" {
+							log.Errorf("Container %s is unhealthy, skipping BGP route", container.Name)
+							return false
 						}
 					} else {
 						if container.State.Running == true {
 							log.Infof("Container %s running, adding BGP route(s)", container.Name)
-							return
+							return true
+						}
+						if container.State.Status != "created" {
+							log.Errorf("Container %s failed to start, skipping BGP route", container.Name)
+							return false
 						}
 					}
 				}
+			} else {
+				return false
 			}
 		}
 		time.Sleep(1 * time.Second)
@@ -128,7 +144,6 @@ func watchDockerStopEvents() {
 	}
 }
 
-// TODO: Potential memory leak in here
 func stopContainer(containerID string, cli *client.Client) {
 	log.Infof("SIGUSR2 signal received from container ID %s, deleting BGP route(s)", containerID)
 	delContainerRoutes(containerID, cli)
