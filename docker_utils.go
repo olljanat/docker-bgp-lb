@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	driverName = "ollijanatuinen/docker-bgp-lb:v1.3"
+	driverName = "ollijanatuinen/docker-bgp-lb:v1.4"
 	SIGUSR2    = "12"
 )
 
@@ -112,7 +112,7 @@ func waitContainerHealthy(networkID, endpointID string) bool {
 	}
 }
 
-func watchDockerStopEvents() {
+func watchDockerStopEvents(action string) {
 	cli, _ := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	err := fmt.Errorf("run once")
 	for err != nil {
@@ -133,7 +133,11 @@ func watchDockerStopEvents() {
 		select {
 		case event := <-messages:
 			if event.Actor.Attributes["signal"] == SIGUSR2 {
-				go stopContainer(event.ID, cli)
+				log.Infof("SIGUSR2 signal received from container ID %s, deleting BGP route(s)", event.ID)
+				delContainerRoutes(event.ID, cli)
+				if action == "stop" {
+					go stopContainer(event.ID, cli)
+				}
 			}
 		case err := <-errs:
 			if err != nil {
@@ -145,8 +149,6 @@ func watchDockerStopEvents() {
 }
 
 func stopContainer(containerID string, cli *client.Client) {
-	log.Infof("SIGUSR2 signal received from container ID %s, deleting BGP route(s)", containerID)
-	delContainerRoutes(containerID, cli)
 	time.Sleep(5 * time.Second)
 
 	timeout := -1

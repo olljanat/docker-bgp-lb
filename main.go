@@ -339,7 +339,7 @@ func main() {
 
 	if os.Getenv("SIGUSR2_HANDLER") == "true" {
 		log.Infof("Starting SIGUSR2 signal handler")
-		go watchDockerStopEvents()
+		go watchDockerStopEvents(os.Getenv("SIGUSR2_ACTION"))
 	}
 
 	if os.Getenv("GLOBAL_SCOPE") == "true" {

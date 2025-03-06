@@ -62,6 +62,14 @@
 			"value": ""
 		},
 		{
+			"name": "SIGUSR2_ACTION",
+			"description": "Configure SIGUSR2 signal action",
+			"settable": [
+				"value"
+			],
+			"value": "stop"
+		},
+		{
 			"name": "GLOBAL_SCOPE",
 			"description": "Use global scope for networks created with this driver",
 			"settable": [
