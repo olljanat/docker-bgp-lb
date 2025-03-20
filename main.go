@@ -330,12 +330,15 @@ func main() {
 	log.SetLevel(logrus.DebugLevel)
 	log.Out = os.Stdout
 
-	err := startBgpServer()
-	if err != nil {
-		log.Errorf("Starting BGP server failed: %v", err)
-		return
+	peerAddress := os.Getenv("PEER_ADDRESS")
+	if net.ParseIP(peerAddress) != nil {
+		err := startBgpServer(peerAddress)
+		if err != nil {
+			log.Errorf("Starting BGP server failed: %v", err)
+			return
+		}
+		go getGwBridge()
 	}
-	go getGwBridge()
 
 	if os.Getenv("SIGUSR2_HANDLER") == "true" {
 		log.Infof("Starting SIGUSR2 signal handler")

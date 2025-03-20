@@ -18,7 +18,7 @@ var bgpServer = serverGoBGP.BgpServer{}
 var routerid = ""
 var localAs = uint32(0)
 
-func startBgpServer() error {
+func startBgpServer(peerAddress string) error {
 	routerid = os.Getenv("ROUTER_ID")
 	if routerid == "" && net.ParseIP(routerid) == nil {
 		return fmt.Errorf("Environment variable ROUTER_ID is required\r\n")
@@ -35,11 +35,6 @@ func startBgpServer() error {
 		return fmt.Errorf("Environment variable LOCAL_AS value is invalid\r\n")
 	}
 	localAs = uint32(localAsInt)
-
-	peerAddress := os.Getenv("PEER_ADDRESS")
-	if peerAddress == "" && net.ParseIP(peerAddress) == nil {
-		return fmt.Errorf("Environment variable PEER_ADDRESS is required\r\n")
-	}
 
 	peerAsInt, err := strconv.Atoi(os.Getenv("PEER_AS"))
 	if err != nil {
