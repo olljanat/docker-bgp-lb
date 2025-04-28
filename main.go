@@ -359,13 +359,16 @@ func main() {
 		}
 	}
 
-	// FixMe: Re-create bridges, restore subnets, etc in here
-	for id, network := range d.Networks {
-		if _, err := createBridge(id); err != nil {
-			log.Printf("Failed to create bridge for network %s: %v", id, err)
+	// Re-create bridges and restore networks but only when we are not running in swarm mode.
+	// This is because swarm will automatically create/remove networks when needed.
+	if os.Getenv("GLOBAL_SCOPE") != "true" {
+		for id, network := range d.Networks {
+			if _, err := createBridge(id); err != nil {
+				log.Printf("Failed to create bridge for network %s: %v", id, err)
+			}
+			network.bridgeName = getBridgeName(id)
+			network.endpoints = make(map[string]*bgpLBEndpoint)
 		}
-		network.bridgeName = getBridgeName(id)
-		network.endpoints = make(map[string]*bgpLBEndpoint)
 	}
 
 	h := api.NewHandler(d)
