@@ -350,25 +350,34 @@ func main() {
 	}
 
 	log.Infof("Starting Docker BGP LB Plugin")
-	d, err := load()
-	if err != nil {
-		log.Println("Failed to load data, starting with an empty configuration:", err)
+
+	// Load saves networks configuration but only when we are not running in swarm mode.
+	// This is because swarm will automatically create/remove networks when needed.
+	var d *bgpLB
+	var err error
+	if os.Getenv("GLOBAL_SCOPE") == "true" {
+		log.Println("Running in Swarm mode, starting with an empty configuration:", err)
 		d = &bgpLB{
 			scope:    driverScope,
 			Networks: make(map[string]*bgpNetwork),
 		}
+	} else {
+		d, err = load()
+		if err != nil {
+			log.Println("Failed to load data, starting with an empty configuration:", err)
+			d = &bgpLB{
+				scope:    driverScope,
+				Networks: make(map[string]*bgpNetwork),
+			}
+		}
 	}
 
-	// Re-create bridges and restore networks but only when we are not running in swarm mode.
-	// This is because swarm will automatically create/remove networks when needed.
-	if os.Getenv("GLOBAL_SCOPE") != "true" {
-		for id, network := range d.Networks {
-			if _, err := createBridge(id); err != nil {
-				log.Printf("Failed to create bridge for network %s: %v", id, err)
-			}
-			network.bridgeName = getBridgeName(id)
-			network.endpoints = make(map[string]*bgpLBEndpoint)
+	for id, network := range d.Networks {
+		if _, err := createBridge(id); err != nil {
+			log.Printf("Failed to create bridge for network %s: %v", id, err)
 		}
+		network.bridgeName = getBridgeName(id)
+		network.endpoints = make(map[string]*bgpLBEndpoint)
 	}
 
 	h := api.NewHandler(d)
