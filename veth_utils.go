@@ -1,7 +1,6 @@
 package main
 
 import (
-	"net"
 	"strings"
 
 	"github.com/google/uuid"
@@ -9,23 +8,22 @@ import (
 )
 
 const (
-	vethPrefix = "veth"
-	vethLen    = 8
+	vethNameLen    = 8
+	vethNamePrefix = "veth"
 )
 
-func randomVethName() string {
+func getVethRandomName() string {
 	randomUuid, _ := uuid.NewRandom()
 
-	return vethPrefix + strings.Replace(randomUuid.String(), "-", "", -1)[:vethLen]
+	return vethNamePrefix + strings.Replace(randomUuid.String(), "-", "", -1)[:vethNameLen]
 }
 
-func createVethPair(macAddress net.HardwareAddr) (string, string, error) {
-	vethName1 := randomVethName()
-	vethName2 := randomVethName()
+func createVethPair() (string, string, error) {
+	vethName1 := getVethRandomName()
+	vethName2 := getVethRandomName()
 
 	linkAttrs := netlink.NewLinkAttrs()
 	linkAttrs.Name = vethName1
-	linkAttrs.HardwareAddr = macAddress
 
 	if err := netlink.LinkAdd(&netlink.Veth{
 		LinkAttrs: linkAttrs,

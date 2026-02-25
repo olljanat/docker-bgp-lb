@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	driverName = "ollijanatuinen/docker-bgp-lb:v1.7"
-	SIGUSR2    = "12"
+	dockerDriverName = "ollijanatuinen/docker-bgp-lb:v1.7"
+	SIGUSR2          = "12"
 )
 
 func getGwBridge() {
@@ -161,7 +161,7 @@ func stopContainer(containerID string, cli *client.Client) {
 
 func delContainerRoutes(containerID string, cli *client.Client) {
 	networkFilter := filters.NewArgs()
-	networkFilter.Add("driver", driverName)
+	networkFilter.Add("driver", dockerDriverName)
 	options := types.NetworkListOptions{
 		Filters: networkFilter,
 	}

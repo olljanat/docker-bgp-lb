@@ -13,20 +13,18 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-var scs = spew.ConfigState{Indent: "  "}
-var log = logrus.Logger{}
-var stateFile = "/bgplb.json"
 var driverScope = "local"
+var log = &logrus.Logger{}
+var scs = spew.ConfigState{Indent: "  "}
+var stateFile = "/bgplb.json"
 
 type bgpLBEndpoint struct {
-	macAddress  net.HardwareAddr
 	vethInside  string
 	vethOutside string
 }
 
 type bgpNetwork struct {
-	bridgeName string
-	endpoints  map[string]*bgpLBEndpoint
+	endpoints map[string]*bgpLBEndpoint
 }
 
 type bgpLB struct {
@@ -105,14 +103,13 @@ func (d *bgpLB) CreateNetwork(r *api.CreateNetworkRequest) error {
 		return types.ForbiddenErrorf("network %s exists", r.NetworkID)
 	}
 
-	bridgeName, err := createBridge(r.NetworkID)
+	err := createBridgeFromNetID(r.NetworkID)
 	if err != nil {
 		return err
 	}
 
 	bgpNetwork := &bgpNetwork{
-		bridgeName: bridgeName,
-		endpoints:  make(map[string]*bgpLBEndpoint),
+		endpoints: make(map[string]*bgpLBEndpoint),
 	}
 
 	d.Networks[r.NetworkID] = bgpNetwork
@@ -164,18 +161,9 @@ func (d *bgpLB) CreateEndpoint(r *api.CreateEndpointRequest) (*api.CreateEndpoin
 		return nil, types.ForbiddenErrorf("%s network does not exist", r.NetworkID)
 	}
 
-	intfInfo := new(api.EndpointInterface)
-	parsedMac, _ := net.ParseMAC(intfInfo.MacAddress)
+	d.Networks[r.NetworkID].endpoints[r.EndpointID] = &bgpLBEndpoint{}
 
-	endpoint := &bgpLBEndpoint{
-		macAddress: parsedMac,
-	}
-
-	d.Networks[r.NetworkID].endpoints[r.EndpointID] = endpoint
-
-	resp := &api.CreateEndpointResponse{
-		Interface: intfInfo,
-	}
+	resp := &api.CreateEndpointResponse{}
 
 	// Start Goroutine which will add local and BGP routes after container is up and running
 	go addRoute(r.NetworkID, r.EndpointID, r.Interface.Address, r.Interface.AddressIPv6)
@@ -218,7 +206,7 @@ func (d *bgpLB) EndpointInfo(r *api.InfoRequest) (*api.InfoResponse, error) {
 	value := make(map[string]string)
 
 	value["ip_address"] = ""
-	value["mac_address"] = endpointInfo.macAddress.String()
+	value["mac_address"] = ""
 	value["veth_outside"] = endpointInfo.vethOutside
 
 	resp := &api.InfoResponse{
@@ -241,13 +229,12 @@ func (d *bgpLB) Join(r *api.JoinRequest) (*api.JoinResponse, error) {
 		return nil, types.ForbiddenErrorf("%s endpoint does not exist", r.NetworkID)
 	}
 
-	endpointInfo := d.Networks[r.NetworkID].endpoints[r.EndpointID]
-	vethInside, vethOutside, err := createVethPair(endpointInfo.macAddress)
+	vethInside, vethOutside, err := createVethPair()
 	if err != nil {
 		return nil, err
 	}
 
-	if err := attachInterfaceToBridge(d.Networks[r.NetworkID].bridgeName, vethOutside); err != nil {
+	if err := attachInterfaceToBridge(getBridgeNameByNetID(r.NetworkID), vethOutside); err != nil {
 		return nil, err
 	}
 
@@ -326,9 +313,14 @@ func load() (*bgpLB, error) {
 }
 
 func main() {
-	log = *logrus.New()
-	log.SetLevel(logrus.DebugLevel)
-	log.Out = os.Stdout
+	log = &logrus.Logger{
+		Out:   os.Stdout,
+		Level: logrus.DebugLevel,
+		Formatter: &logrus.TextFormatter{
+			FullTimestamp:          true,
+			DisableLevelTruncation: true,
+		},
+	}
 
 	peerAddress := os.Getenv("PEER_ADDRESS")
 	if net.ParseIP(peerAddress) != nil {
@@ -356,7 +348,7 @@ func main() {
 	var d *bgpLB
 	var err error
 	if os.Getenv("GLOBAL_SCOPE") == "true" {
-		log.Println("Running in Swarm mode, starting with an empty configuration:", err)
+		log.Info("Running in Swarm mode, starting with an empty configuration:", err)
 		d = &bgpLB{
 			scope:    driverScope,
 			Networks: make(map[string]*bgpNetwork),
@@ -364,7 +356,7 @@ func main() {
 	} else {
 		d, err = load()
 		if err != nil {
-			log.Println("Failed to load data, starting with an empty configuration:", err)
+			log.Info("Failed to load data, starting with an empty configuration:", err)
 			d = &bgpLB{
 				scope:    driverScope,
 				Networks: make(map[string]*bgpNetwork),
@@ -373,10 +365,9 @@ func main() {
 	}
 
 	for id, network := range d.Networks {
-		if _, err := createBridge(id); err != nil {
+		if err := createBridgeFromNetID(id); err != nil {
 			log.Printf("Failed to create bridge for network %s: %v", id, err)
 		}
-		network.bridgeName = getBridgeName(id)
 		network.endpoints = make(map[string]*bgpLBEndpoint)
 	}
 

@@ -11,43 +11,43 @@ import (
 )
 
 const (
-	bridgePrefix = "bgplb"
-	bridgeLen    = 9
+	bridgeNameLen    = 9
+	bridgeNamePrefix = "bgplb"
 )
 
-func getBridgeName(netID string) string {
-	return bridgePrefix + "-" + netID[:bridgeLen]
+func getBridgeNameByNetID(netID string) string {
+	return bridgeNamePrefix + "-" + netID[:bridgeNameLen]
 }
 
-func createBridge(netID string) (string, error) {
-	bridgeName := getBridgeName(netID)
+func createBridgeFromNetID(netID string) error {
+	name := getBridgeNameByNetID(netID)
 
-	exists, err := bridgeInterfaceExists(bridgeName)
+	exists, err := bridgeInterfaceExists(name)
 	if err != nil {
-		return "", err
+		return err
 	}
 
 	if !exists {
 		linkAttrs := netlink.NewLinkAttrs()
-		linkAttrs.Name = bridgeName
+		linkAttrs.Name = name
 
 		if err := netlink.LinkAdd(&netlink.Bridge{
 			LinkAttrs: linkAttrs,
 		}); err != nil {
-			return "", err
+			return err
 		}
 	}
 
-	bridge, err := netlink.LinkByName(bridgeName)
+	bridge, err := netlink.LinkByName(name)
 	if err != nil {
-		return "", err
+		return err
 	}
 
 	if err := patchBridge(bridge); err != nil {
-		return "", err
+		return err
 	}
 
-	return bridgeName, nil
+	return nil
 }
 
 func patchBridge(bridge netlink.Link) error {
@@ -82,7 +82,7 @@ func patchBridge(bridge netlink.Link) error {
 }
 
 func deleteBridge(netID string) error {
-	bridgeName := getBridgeName(netID)
+	bridgeName := getBridgeNameByNetID(netID)
 
 	bridge, err := netlink.LinkByName(bridgeName)
 	if err != nil {

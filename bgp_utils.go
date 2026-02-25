@@ -14,13 +14,15 @@ import (
 	apb "google.golang.org/protobuf/types/known/anypb"
 )
 
-var bgpServer = serverGoBGP.BgpServer{}
-var routerid = ""
-var localAs = uint32(0)
+var (
+	bgpServer = serverGoBGP.BgpServer{}
+	localAS   = uint32(0)
+	routerID  = ""
+)
 
 func startBgpServer(peerAddress string) error {
-	routerid = os.Getenv("ROUTER_ID")
-	if routerid == "" && net.ParseIP(routerid) == nil {
+	routerID = os.Getenv("ROUTER_ID")
+	if routerID == "" && net.ParseIP(routerID) == nil {
 		return fmt.Errorf("Environment variable ROUTER_ID is required\r\n")
 	}
 
@@ -34,7 +36,7 @@ func startBgpServer(peerAddress string) error {
 	if err != nil {
 		return fmt.Errorf("Environment variable LOCAL_AS value is invalid\r\n")
 	}
-	localAs = uint32(localAsInt)
+	localAS = uint32(localAsInt)
 
 	peerAsInt, err := strconv.Atoi(os.Getenv("PEER_AS"))
 	if err != nil {
@@ -48,8 +50,8 @@ func startBgpServer(peerAddress string) error {
 	go bgpServer.Serve()
 	err = bgpServer.StartBgp(context.Background(), &apiGoBGP.StartBgpRequest{
 		Global: &apiGoBGP.Global{
-			RouterId:   routerid,
-			Asn:        localAs,
+			RouterId:   routerID,
+			Asn:        localAS,
 			ListenPort: routerPort,
 		},
 	})
@@ -81,7 +83,7 @@ func addRoute(NetworkID, EndpointID, ipv4, ipv6 string) {
 		return
 	}
 
-	bridgeName := getBridgeName(NetworkID)
+	bridgeName := getBridgeNameByNetID(NetworkID)
 	bridge, err := netlink.LinkByName(bridgeName)
 	if err != nil {
 		log.Errorf("addRoute error: %v", err)
@@ -105,8 +107,6 @@ func addRoute(NetworkID, EndpointID, ipv4, ipv6 string) {
 
 		addBgpRoute(ip.String(), 128, apiGoBGP.Family_AFI_IP6)
 	}
-
-	return
 }
 
 func addBgpRoute(prefix string, mask int, ipFamily apiGoBGP.Family_Afi) error {
@@ -118,7 +118,7 @@ func addBgpRoute(prefix string, mask int, ipFamily apiGoBGP.Family_Afi) error {
 		Origin: 0,
 	})
 	a2, _ := apb.New(&apiGoBGP.NextHopAttribute{
-		NextHop: routerid,
+		NextHop: routerID,
 	})
 	a3, _ := apb.New(&apiGoBGP.AsPathAttribute{
 		Segments: []*apiGoBGP.AsSegment{
@@ -139,7 +139,7 @@ func addBgpRoute(prefix string, mask int, ipFamily apiGoBGP.Family_Afi) error {
 }
 
 func delRoute(NetworkID, EndpointID string) {
-	bridgeName := getBridgeName(NetworkID)
+	bridgeName := getBridgeNameByNetID(NetworkID)
 	bridge, err := netlink.LinkByName(bridgeName)
 	if err != nil {
 		log.Errorf("delRoute error: %v", err)
@@ -168,8 +168,6 @@ func delRoute(NetworkID, EndpointID string) {
 			log.Errorf("Cannot remove local route to: %v , Error: %v", v6dst.String(), err)
 		}
 	}
-
-	return
 }
 
 func delBgpRoute(prefix string, mask int, ipFamily apiGoBGP.Family_Afi) error {
@@ -181,7 +179,7 @@ func delBgpRoute(prefix string, mask int, ipFamily apiGoBGP.Family_Afi) error {
 		Origin: 0,
 	})
 	a2, _ := apb.New(&apiGoBGP.NextHopAttribute{
-		NextHop: routerid,
+		NextHop: routerID,
 	})
 	a3, _ := apb.New(&apiGoBGP.AsPathAttribute{
 		Segments: []*apiGoBGP.AsSegment{
