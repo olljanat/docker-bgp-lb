@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/davecgh/go-spew/spew"
@@ -14,6 +17,7 @@ import (
 )
 
 var driverScope = "local"
+var lbServer *bgpLB
 var log = &logrus.Logger{}
 var scs = spew.ConfigState{Indent: "  "}
 var stateFile = "/bgplb.json"
@@ -28,8 +32,10 @@ type bgpNetwork struct {
 }
 
 type bgpLB struct {
-	scope    string
 	Networks map[string]*bgpNetwork
+
+	advertisedNetworks map[string][]string
+	scope              string
 	sync.Mutex
 }
 
@@ -113,7 +119,7 @@ func (d *bgpLB) CreateNetwork(r *api.CreateNetworkRequest) error {
 	}
 
 	d.Networks[r.NetworkID] = bgpNetwork
-	err = d.save()
+	err = d.saveState()
 	if err != nil {
 		return err
 	}
@@ -136,7 +142,7 @@ func (d *bgpLB) DeleteNetwork(r *api.DeleteNetworkRequest) error {
 	}
 
 	delete(d.Networks, r.NetworkID)
-	err = d.save()
+	err = d.saveState()
 	if err != nil {
 		return err
 	}
@@ -291,15 +297,15 @@ func (d *bgpLB) RevokeExternalConnectivity(r *api.RevokeExternalConnectivityRequ
 	return nil
 }
 
-func (d *bgpLB) save() error {
-	data, err := json.Marshal(d)
+func (lb *bgpLB) saveState() error {
+	data, err := json.Marshal(lb)
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(stateFile, data, 0644)
 }
 
-func load() (*bgpLB, error) {
+func loadState() (*bgpLB, error) {
 	data, err := os.ReadFile(stateFile)
 	if err != nil {
 		return nil, err
@@ -312,6 +318,54 @@ func load() (*bgpLB, error) {
 	return &b, nil
 }
 
+func isNetworkAdvertised(netID string) bool {
+	lbServer.Lock()
+	defer lbServer.Unlock()
+
+	_, ok := lbServer.advertisedNetworks[netID]
+
+	return ok
+}
+
+func addAdvertisedSubnet(ctx context.Context, netID, subnet string) error {
+	lbServer.Lock()
+	defer lbServer.Unlock()
+
+	if !isPrefixAdvertised(ctx, subnet) {
+		if err := advertisePrefix(ctx, subnet); err != nil {
+			return fmt.Errorf("addAdvertisedSubnet: failed to advertise the subnet: %w", err)
+		}
+	}
+
+	lbServer.advertisedNetworks[netID] = append(lbServer.advertisedNetworks[netID], subnet)
+	return nil
+}
+
+func delAdvertisedNetwork(ctx context.Context, netID string) error {
+	lbServer.Lock()
+	defer lbServer.Unlock()
+
+	subnets, ok := lbServer.advertisedNetworks[netID]
+	if !ok {
+		return fmt.Errorf("delAdvertisedNetwork: network is not advertised")
+	}
+
+	var errs []string
+	for _, subnet := range subnets {
+		if isPrefixAdvertised(ctx, subnet) {
+			if err := withdrawPrefix(ctx, subnet); err != nil {
+				errs = append(errs, fmt.Sprintf("withdrawPrefix(%s) => %s", subnet, err))
+			}
+		}
+	}
+
+	if errs != nil {
+		return fmt.Errorf("delAdvertisedNetwork: %s", strings.Join(errs, ", "))
+	}
+
+	return nil
+}
+
 func main() {
 	log = &logrus.Logger{
 		Out:   os.Stdout,
@@ -322,6 +376,9 @@ func main() {
 		},
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	peerAddress := os.Getenv("PEER_ADDRESS")
 	if net.ParseIP(peerAddress) != nil {
 		err := startBgpServer(peerAddress)
@@ -329,12 +386,7 @@ func main() {
 			log.Errorf("Starting BGP server failed: %v", err)
 			return
 		}
-		go getGwBridge()
-	}
-
-	if os.Getenv("SIGUSR2_HANDLER") == "true" {
-		log.Infof("Starting SIGUSR2 signal handler")
-		go watchDockerStopEvents(os.Getenv("SIGUSR2_ACTION"))
+		go getGwBridge(ctx)
 	}
 
 	if os.Getenv("GLOBAL_SCOPE") == "true" {
@@ -343,36 +395,38 @@ func main() {
 
 	log.Infof("Starting Docker BGP LB Plugin")
 
+	lbServer = &bgpLB{
+		advertisedNetworks: make(map[string][]string),
+		scope:              driverScope,
+	}
+	go watchDockerEvents(ctx)
+
 	// Load saves networks configuration but only when we are not running in swarm mode.
 	// This is because swarm will automatically create/remove networks when needed.
-	var d *bgpLB
-	var err error
-	if os.Getenv("GLOBAL_SCOPE") == "true" {
-		log.Info("Running in Swarm mode, starting with an empty configuration:", err)
-		d = &bgpLB{
-			scope:    driverScope,
-			Networks: make(map[string]*bgpNetwork),
-		}
+	lbServer.Lock()
+	if driverScope == "global" {
+		log.Info("Running in Swarm mode, starting with an empty configuration.")
+		lbServer.Networks = make(map[string]*bgpNetwork)
 	} else {
-		d, err = load()
+		d, err := loadState()
 		if err != nil {
-			log.Info("Failed to load data, starting with an empty configuration:", err)
-			d = &bgpLB{
-				scope:    driverScope,
-				Networks: make(map[string]*bgpNetwork),
-			}
+			log.Info("Failed to load data, starting with an empty configuration.")
+			lbServer.Networks = make(map[string]*bgpNetwork)
+		} else {
+			lbServer.Networks = d.Networks
 		}
 	}
 
-	for id, network := range d.Networks {
+	for id, network := range lbServer.Networks {
 		if err := createBridgeFromNetID(id); err != nil {
 			log.Printf("Failed to create bridge for network %s: %v", id, err)
 		}
 		network.endpoints = make(map[string]*bgpLBEndpoint)
 	}
+	lbServer.Unlock()
 
-	h := api.NewHandler(d)
-	if err = h.ServeUnix("bgplb", 0); err != nil {
+	h := api.NewHandler(lbServer)
+	if err := h.ServeUnix("bgplb", 0); err != nil {
 		log.Errorf("ServeUnix failed: %v", err)
 		return
 	}

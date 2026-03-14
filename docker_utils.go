@@ -3,23 +3,27 @@ package main
 import (
 	"context"
 	"fmt"
-	"net"
-	"strings"
+	"os"
 	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
-	apiGoBGP "github.com/osrg/gobgp/v3/api"
 )
 
 const (
 	dockerDriverName = "ollijanatuinen/docker-bgp-lb:v1.7"
-	SIGUSR2          = "12"
+	SIGUSR2Number    = "12"
 )
 
-func getGwBridge() {
+var (
+	SIGUSR2Action  string
+	SIGUSR2Enabled bool
+)
+
+func getGwBridge(ctx context.Context) {
 	cli, _ := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	err := fmt.Errorf("run once")
 	for err != nil {
@@ -34,28 +38,22 @@ func getGwBridge() {
 	options := types.NetworkListOptions{
 		Filters: networkFilter,
 	}
-	networks, err := cli.NetworkList(context.Background(), options)
+	networks, err := cli.NetworkList(ctx, options)
 	if err != nil {
 		log.Errorf("getGwBridge: Error getting networks from Docker: %v\n", err)
 		return
 	}
 
 	for _, network := range networks {
-		fmt.Printf("Network name: %v\r\n", network.Name)
-		ipamConfigs := network.IPAM.Config
-		for _, ipam := range ipamConfigs {
-			_, ipnet, err := net.ParseCIDR(ipam.Subnet)
-			if err != nil {
-				log.Errorf("getGwBridge: Failed to parse IPAM subnet : %v\n", err)
-				return
-			}
-			mask, _ := ipnet.Mask.Size()
-			if ipnet.IP.To4() == nil && strings.Contains(ipnet.IP.String(), ":") {
-				log.Infof("Adding BGP route to local BGP LB gateway IPv6 subnet: %v/%v", ipnet.IP.String(), mask)
-				addBgpRoute(ipnet.IP.String(), mask, apiGoBGP.Family_AFI_IP6)
-			} else {
-				log.Infof("Adding BGP route to local BGP LB gateway IPv4 subnet: %v/%v", ipnet.IP.String(), mask)
-				addBgpRoute(ipnet.IP.String(), mask, apiGoBGP.Family_AFI_IP)
+		if !isNetworkAdvertised(network.ID) {
+			log := log.WithField("network.id", network.ID[:11]).WithField("network.name", network.Name)
+			ipamConfigs := network.IPAM.Config
+			for _, ipam := range ipamConfigs {
+				if err := addAdvertisedSubnet(ctx, network.ID, ipam.Subnet); err == nil {
+					log.WithField("subnet", ipam.Subnet).Info("getGwBridge: advertising the subnet")
+				} else {
+					log.WithField("subnet", ipam.Subnet).Errorf("getGwBridge: failed to advertise the subnet: %v", err)
+				}
 			}
 		}
 	}
@@ -112,53 +110,6 @@ func waitContainerHealthy(networkID, endpointID string) bool {
 	}
 }
 
-func watchDockerStopEvents(action string) {
-	cli, _ := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	err := fmt.Errorf("run once")
-	for err != nil {
-		_, err = cli.ServerVersion(context.Background())
-		if err != nil {
-			time.Sleep(time.Second * 1)
-		}
-	}
-
-	eventFilter := filters.NewArgs()
-	eventFilter.Add("event", "kill")
-	options := types.EventsOptions{
-		Filters: eventFilter,
-	}
-	messages, errs := cli.Events(context.Background(), options)
-
-	for {
-		select {
-		case event := <-messages:
-			if event.Actor.Attributes["signal"] == SIGUSR2 {
-				log.Infof("SIGUSR2 signal received from container ID %s, deleting BGP route(s)", event.ID)
-				delContainerRoutes(event.ID, cli)
-				if action == "stop" {
-					go stopContainer(event.ID, cli)
-				}
-			}
-		case err := <-errs:
-			if err != nil {
-				log.Errorf("watchDockerEvents: Error: %v\n", err)
-				time.Sleep(1 * time.Second)
-			}
-		}
-	}
-}
-
-func stopContainer(containerID string, cli *client.Client) {
-	time.Sleep(5 * time.Second)
-
-	timeout := -1
-	options := container.StopOptions{
-		Signal:  "SIGTERM",
-		Timeout: &timeout,
-	}
-	cli.ContainerStop(context.Background(), containerID, options)
-}
-
 func delContainerRoutes(containerID string, cli *client.Client) {
 	networkFilter := filters.NewArgs()
 	networkFilter.Add("driver", dockerDriverName)
@@ -182,6 +133,119 @@ func delContainerRoutes(containerID string, cli *client.Client) {
 			if network.ID == containerNetwork.NetworkID {
 				go delRoute(containerNetwork.NetworkID, containerNetwork.EndpointID)
 			}
+		}
+	}
+}
+
+func watchDockerEvents(ctx context.Context) {
+	timer := time.NewTimer(1 * time.Second)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-timer.C:
+			cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+			if err != nil {
+				log.Errorf("watchDockerEvents: cannot connect to Docker: %v", err)
+				break
+			}
+			defer cli.Close()
+
+			eventFilters := filters.NewArgs(
+				filters.Arg("type", "network"),
+				filters.Arg("action", "create"),
+				filters.Arg("action", "destroy"),
+			)
+
+			if os.Getenv("SIGUSR2_HANDLER") == "true" {
+				log.Info("Enabling SIGUSR2 signal handler")
+
+				SIGUSR2Enabled = true
+				SIGUSR2Action = (os.Getenv("SIGUSR2_ACTION"))
+				eventFilters.Add("type", "container")
+				eventFilters.Add("action", "kill")
+			}
+
+			eventOptions := types.EventsOptions{Filters: eventFilters}
+			messages, errors := cli.Events(ctx, eventOptions)
+
+		eventLoop:
+			for {
+				select {
+				case event := <-messages:
+					if event.Type == events.NetworkEventType {
+						switch event.Action {
+						case events.ActionCreate:
+							handleDockerNetworkCreate(ctx, cli, &event)
+						case events.ActionDestroy:
+							handleDockerNetworkDestroy(ctx, &event)
+						}
+					}
+					if event.Type == events.ContainerEventType {
+						if event.Action == events.ActionKill {
+							if SIGUSR2Enabled {
+								handleDockerContainerKill(ctx, cli, &event)
+							}
+						}
+					}
+
+				case err := <-errors:
+					log.Warnf("watchDockerEvents: restarting due to: %v", err)
+					break eventLoop
+				}
+			}
+
+		case <-ctx.Done():
+			log.Warnf("watchDockerEvents: exiting due to: %v", ctx.Err())
+			return
+		}
+	}
+}
+
+func handleDockerNetworkCreate(ctx context.Context, cli *client.Client, event *events.Message) {
+	log := log.WithField("network.id", event.Actor.ID[:11])
+	network, err := cli.NetworkInspect(ctx, event.Actor.ID, types.NetworkInspectOptions{})
+	if err != nil {
+		log.Errorf("handleDockerNetworkCreate: cannot inspect the network: %v", err)
+		return
+	}
+	if !isNetworkAdvertised(network.ID) {
+		log = log.WithField("network.name", network.Name)
+		if l, ok := network.Labels["bgplb_advertise"]; ok && l == "true" {
+			for _, ipam := range network.IPAM.Config {
+				if err := addAdvertisedSubnet(ctx, network.ID, ipam.Subnet); err == nil {
+					log.WithField("subnet", ipam.Subnet).Info("handleDockerNetworkCreate: advertising the subnet")
+				} else {
+					log.WithField("subnet", ipam.Subnet).Errorf("handleDockerNetworkCreate: failed to advertise the subnet: %v", err)
+				}
+			}
+		}
+	}
+}
+
+func handleDockerNetworkDestroy(ctx context.Context, event *events.Message) {
+	log := log.WithField("network.id", event.Actor.ID[:11])
+	if isNetworkAdvertised(event.Actor.ID) {
+		if err := delAdvertisedNetwork(ctx, event.Actor.ID); err == nil {
+			log.Info("handleDockerNetworkDestroy: removed the advertised network")
+		} else {
+			log.Errorf("handleDockerNetworkDestroy: failed to remove the advertised network: %v", err)
+		}
+	}
+}
+
+func handleDockerContainerKill(ctx context.Context, cli *client.Client, event *events.Message) {
+	log := log.WithField("container.id", event.Actor.ID[:11])
+	if event.Actor.Attributes["signal"] == SIGUSR2Number {
+		log.Info("SIGUSR2 signal received. Gracefully drain the load")
+		delContainerRoutes(event.ID, cli)
+
+		if SIGUSR2Action == "stop" {
+			log.Info("Stopping the container due to the 'SIGUSR2_ACTION=stop'")
+			go func() {
+				time.Sleep(5 * time.Second)
+				cli.ContainerStop(ctx, event.Actor.ID, container.StopOptions{Signal: "SIGTERM"})
+			}()
 		}
 	}
 }

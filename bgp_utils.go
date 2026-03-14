@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 
 	apiGoBGP "github.com/osrg/gobgp/v3/api"
 	loggerGoBGP "github.com/osrg/gobgp/v3/pkg/log"
@@ -201,5 +202,119 @@ func delBgpRoute(prefix string, mask int, ipFamily apiGoBGP.Family_Afi) error {
 	if err != nil {
 		return err
 	}
+	return nil
+}
+
+func isPrefixAdvertised(ctx context.Context, prefix string) bool {
+	_, ipnet, err := net.ParseCIDR(prefix)
+	if err != nil {
+		return false
+	}
+
+	var counter int
+	callback := func(*apiGoBGP.Destination) { counter++ }
+	request := &apiGoBGP.ListPathRequest{
+		Family:   &apiGoBGP.Family{Afi: apiGoBGP.Family_AFI_IP, Safi: apiGoBGP.Family_SAFI_UNICAST},
+		Prefixes: []*apiGoBGP.TableLookupPrefix{{Prefix: prefix}},
+	}
+
+	if ipnet.IP.To4() == nil && strings.Contains(ipnet.IP.String(), ":") {
+		request.Family.Afi = apiGoBGP.Family_AFI_IP6
+	}
+
+	bgpServer.ListPath(ctx, request, callback)
+
+	return counter > 0
+}
+
+func advertisePrefix(ctx context.Context, prefix string) error {
+	_, ipnet, err := net.ParseCIDR(prefix)
+	if err != nil {
+		return fmt.Errorf("advertisePrefix: failed to parse the prefix: %w", err)
+	}
+
+	mask, _ := ipnet.Mask.Size()
+	var family apiGoBGP.Family_Afi
+	if ipnet.IP.To4() == nil && strings.Contains(ipnet.IP.String(), ":") {
+		family = apiGoBGP.Family_AFI_IP6
+	} else {
+		family = apiGoBGP.Family_AFI_IP
+	}
+
+	nlri, _ := apb.New(&apiGoBGP.IPAddressPrefix{
+		Prefix:    ipnet.IP.String(),
+		PrefixLen: uint32(mask),
+	})
+	a1, _ := apb.New(&apiGoBGP.OriginAttribute{
+		Origin: 0,
+	})
+	a2, _ := apb.New(&apiGoBGP.NextHopAttribute{
+		NextHop: routerID,
+	})
+	a3, _ := apb.New(&apiGoBGP.AsPathAttribute{
+		Segments: []*apiGoBGP.AsSegment{
+			{
+				Type: 2,
+			},
+		},
+	})
+	attrs := []*apb.Any{a1, a2, a3}
+	if _, err := bgpServer.AddPath(ctx, &apiGoBGP.AddPathRequest{
+		Path: &apiGoBGP.Path{
+			Family: &apiGoBGP.Family{Afi: family, Safi: apiGoBGP.Family_SAFI_UNICAST},
+			Nlri:   nlri,
+			Pattrs: attrs,
+		},
+	}); err != nil {
+		return fmt.Errorf("advertisePrefix: failed to add the prefix: %w", err)
+	}
+
+	return nil
+}
+
+func withdrawPrefix(ctx context.Context, prefix string) error {
+	_, ipnet, err := net.ParseCIDR(prefix)
+	if err != nil {
+		return fmt.Errorf("withdrawPrefix: failed to parse the prefix: %w", err)
+	}
+
+	mask, _ := ipnet.Mask.Size()
+	var family apiGoBGP.Family_Afi
+	if ipnet.IP.To4() == nil && strings.Contains(ipnet.IP.String(), ":") {
+		family = apiGoBGP.Family_AFI_IP6
+	} else {
+		family = apiGoBGP.Family_AFI_IP
+	}
+
+	nlri, _ := apb.New(&apiGoBGP.IPAddressPrefix{
+		Prefix:    ipnet.IP.String(),
+		PrefixLen: uint32(mask),
+	})
+	a1, _ := apb.New(&apiGoBGP.OriginAttribute{
+		Origin: 0,
+	})
+	a2, _ := apb.New(&apiGoBGP.NextHopAttribute{
+		NextHop: routerID,
+	})
+	a3, _ := apb.New(&apiGoBGP.AsPathAttribute{
+		Segments: []*apiGoBGP.AsSegment{
+			{
+				Type: 2,
+			},
+		},
+	})
+	attrs := []*apb.Any{a1, a2, a3}
+	p1 := &apiGoBGP.Path{
+		Family: &apiGoBGP.Family{Afi: family, Safi: apiGoBGP.Family_SAFI_UNICAST},
+		Nlri:   nlri,
+		Pattrs: attrs,
+	}
+	if err := bgpServer.DeletePath(ctx, &apiGoBGP.DeletePathRequest{
+		TableType: apiGoBGP.TableType_GLOBAL,
+		Path:      p1,
+	}); err != nil {
+		return fmt.Errorf("withdrawPrefix: failed to delete the prefix: %w", err)
+	}
+
 	return nil
 }
