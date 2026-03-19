@@ -363,6 +363,7 @@ func delAdvertisedNetwork(ctx context.Context, netID string) error {
 		return fmt.Errorf("delAdvertisedNetwork: %s", strings.Join(errs, ", "))
 	}
 
+	delete(lbServer.advertisedNetworks, netID)
 	return nil
 }
 
@@ -380,6 +381,11 @@ func main() {
 	defer cancel()
 
 	peerAddress := os.Getenv("PEER_ADDRESS")
+	if peerAddress == "" {
+		log.Error("Environment variable PEER_ADDRESS is required")
+		return
+	}
+
 	if net.ParseIP(peerAddress) != nil {
 		err := startBgpServer(peerAddress)
 		if err != nil {

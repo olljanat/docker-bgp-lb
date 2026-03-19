@@ -6,6 +6,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/cenkalti/backoff/v4"
+
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/events"
@@ -27,7 +29,7 @@ func getGwBridge(ctx context.Context) {
 	cli, _ := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	err := fmt.Errorf("run once")
 	for err != nil {
-		_, err = cli.ServerVersion(context.Background())
+		_, err = cli.ServerVersion(ctx)
 		if err != nil {
 			time.Sleep(time.Second * 1)
 		}
@@ -138,18 +140,30 @@ func delContainerRoutes(containerID string, cli *client.Client) {
 }
 
 func watchDockerEvents(ctx context.Context) {
-	timer := time.NewTimer(1 * time.Second)
-	defer timer.Stop()
+	if os.Getenv("SIGUSR2_HANDLER") == "true" {
+		log.Info("Enabling SIGUSR2 signal handler")
+
+		SIGUSR2Enabled = true
+		SIGUSR2Action = (os.Getenv("SIGUSR2_ACTION"))
+	}
+
+	backoffConfig := backoff.NewExponentialBackOff(
+		backoff.WithInitialInterval(1*time.Second),
+		backoff.WithMultiplier(1.5),
+		backoff.WithMaxInterval(5*time.Second),
+	)
+
+	ticker := backoff.NewTicker(backoffConfig)
+	defer ticker.Stop()
 
 	for {
 		select {
-		case <-timer.C:
+		case <-ticker.C:
 			cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 			if err != nil {
 				log.Errorf("watchDockerEvents: cannot connect to Docker: %v", err)
 				break
 			}
-			defer cli.Close()
 
 			eventFilters := filters.NewArgs(
 				filters.Arg("type", "network"),
@@ -157,11 +171,7 @@ func watchDockerEvents(ctx context.Context) {
 				filters.Arg("action", "destroy"),
 			)
 
-			if os.Getenv("SIGUSR2_HANDLER") == "true" {
-				log.Info("Enabling SIGUSR2 signal handler")
-
-				SIGUSR2Enabled = true
-				SIGUSR2Action = (os.Getenv("SIGUSR2_ACTION"))
+			if SIGUSR2Enabled {
 				eventFilters.Add("type", "container")
 				eventFilters.Add("action", "kill")
 			}
@@ -194,6 +204,7 @@ func watchDockerEvents(ctx context.Context) {
 					break eventLoop
 				}
 			}
+			cli.Close()
 
 		case <-ctx.Done():
 			log.Warnf("watchDockerEvents: exiting due to: %v", ctx.Err())
