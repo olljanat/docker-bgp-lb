@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strings"
+	"slices"
 	"sync"
 
 	"github.com/davecgh/go-spew/spew"
@@ -31,10 +31,15 @@ type bgpNetwork struct {
 	endpoints map[string]*bgpLBEndpoint
 }
 
+type advertisedNetwork struct {
+	subnets []string
+	sync.Mutex
+}
+
 type bgpLB struct {
 	Networks map[string]*bgpNetwork
 
-	advertisedNetworks map[string][]string
+	advertisedNetworks map[string]*advertisedNetwork
 	scope              string
 	sync.Mutex
 }
@@ -318,52 +323,67 @@ func loadState() (*bgpLB, error) {
 	return &b, nil
 }
 
-func isNetworkAdvertised(netID string) bool {
-	lbServer.Lock()
-	defer lbServer.Unlock()
-
-	_, ok := lbServer.advertisedNetworks[netID]
-
-	return ok
-}
-
 func addAdvertisedSubnet(ctx context.Context, netID, subnet string) error {
+	net := &advertisedNetwork{}
+
 	lbServer.Lock()
-	defer lbServer.Unlock()
+	if n, ok := lbServer.advertisedNetworks[netID]; !ok {
+		lbServer.advertisedNetworks[netID] = net
+	} else {
+		net = n
+	}
+	lbServer.Unlock()
+
+	net.Lock()
+	if slices.Contains(net.subnets, subnet) {
+		net.Unlock()
+		return fmt.Errorf("addAdvertisedSubnet: the subnet '%s' is already advertised", subnet)
+	}
+	// reserve the subnet before the external call
+	net.subnets = append(net.subnets, subnet)
+	net.Unlock()
 
 	if !isPrefixAdvertised(ctx, subnet) {
 		if err := advertisePrefix(ctx, subnet); err != nil {
+			net.Lock()
+			// remove the reserved subnet if advertising failed
+			idx := slices.Index(net.subnets, subnet)
+			if idx >= 0 {
+				net.subnets = slices.Delete(net.subnets, idx, idx+1)
+			}
+			net.Unlock()
 			return fmt.Errorf("addAdvertisedSubnet: failed to advertise the subnet: %w", err)
 		}
 	}
 
-	lbServer.advertisedNetworks[netID] = append(lbServer.advertisedNetworks[netID], subnet)
 	return nil
 }
 
 func delAdvertisedNetwork(ctx context.Context, netID string) error {
 	lbServer.Lock()
-	defer lbServer.Unlock()
 
-	subnets, ok := lbServer.advertisedNetworks[netID]
+	net, ok := lbServer.advertisedNetworks[netID]
 	if !ok {
-		return fmt.Errorf("delAdvertisedNetwork: network is not advertised")
+		lbServer.Unlock()
+		return fmt.Errorf("delAdvertisedNetwork: network '%s' is not advertised", netID[:11])
 	}
+	lbServer.Unlock()
 
-	var errs []string
+	net.Lock()
+	subnets := append([]string(nil), net.subnets...)
+	net.Unlock()
+
 	for _, subnet := range subnets {
 		if isPrefixAdvertised(ctx, subnet) {
 			if err := withdrawPrefix(ctx, subnet); err != nil {
-				errs = append(errs, fmt.Sprintf("withdrawPrefix(%s) => %s", subnet, err))
+				return fmt.Errorf("delAdvertisedNetwork: failed to withdraw the subnet %w", err)
 			}
 		}
 	}
 
-	if errs != nil {
-		return fmt.Errorf("delAdvertisedNetwork: %s", strings.Join(errs, ", "))
-	}
-
+	lbServer.Lock()
 	delete(lbServer.advertisedNetworks, netID)
+	lbServer.Unlock()
 	return nil
 }
 
@@ -386,13 +406,14 @@ func main() {
 		return
 	}
 
-	if net.ParseIP(peerAddress) != nil {
-		err := startBgpServer(peerAddress)
-		if err != nil {
-			log.Errorf("Starting BGP server failed: %v", err)
-			return
-		}
-		go getGwBridge(ctx)
+	if net.ParseIP(peerAddress) == nil {
+		log.Errorf("Value of PEER_ADDRESS is not a valid IP address. Got: %s", peerAddress)
+		return
+	}
+
+	if err := startBgpServer(peerAddress); err != nil {
+		log.Errorf("Starting BGP server failed: %v", err)
+		return
 	}
 
 	if os.Getenv("GLOBAL_SCOPE") == "true" {
@@ -402,11 +423,11 @@ func main() {
 	log.Infof("Starting Docker BGP LB Plugin")
 
 	lbServer = &bgpLB{
-		advertisedNetworks: make(map[string][]string),
+		advertisedNetworks: make(map[string]*advertisedNetwork),
 		scope:              driverScope,
 	}
+	go advertiseNetworksOnStart(ctx)
 	go watchDockerEvents(ctx)
-
 	// Load saves networks configuration but only when we are not running in swarm mode.
 	// This is because swarm will automatically create/remove networks when needed.
 	lbServer.Lock()

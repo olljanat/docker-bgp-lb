@@ -25,7 +25,7 @@ var (
 	SIGUSR2Enabled bool
 )
 
-func getGwBridge(ctx context.Context) {
+func advertiseNetworksOnStart(ctx context.Context) {
 	cli, _ := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	err := fmt.Errorf("run once")
 	for err != nil {
@@ -34,6 +34,7 @@ func getGwBridge(ctx context.Context) {
 			time.Sleep(time.Second * 1)
 		}
 	}
+	defer cli.Close()
 
 	networkFilter := filters.NewArgs()
 	networkFilter.Add("label", "bgplb_advertise=true")
@@ -42,20 +43,18 @@ func getGwBridge(ctx context.Context) {
 	}
 	networks, err := cli.NetworkList(ctx, options)
 	if err != nil {
-		log.Errorf("getGwBridge: Error getting networks from Docker: %v\n", err)
+		log.Errorf("advertiseNetworksOnStart: Error getting networks from Docker: %v\n", err)
 		return
 	}
 
 	for _, network := range networks {
-		if !isNetworkAdvertised(network.ID) {
-			log := log.WithField("network.id", network.ID[:11]).WithField("network.name", network.Name)
-			ipamConfigs := network.IPAM.Config
-			for _, ipam := range ipamConfigs {
-				if err := addAdvertisedSubnet(ctx, network.ID, ipam.Subnet); err == nil {
-					log.WithField("subnet", ipam.Subnet).Info("getGwBridge: advertising the subnet")
-				} else {
-					log.WithField("subnet", ipam.Subnet).Errorf("getGwBridge: failed to advertise the subnet: %v", err)
-				}
+		log := log.WithField("network.id", network.ID[:11]).WithField("network.name", network.Name)
+		ipamConfigs := network.IPAM.Config
+		for _, ipam := range ipamConfigs {
+			if err := addAdvertisedSubnet(ctx, network.ID, ipam.Subnet); err == nil {
+				log.WithField("subnet", ipam.Subnet).Info("advertiseNetworksOnStart: advertising the subnet")
+			} else {
+				log.WithField("subnet", ipam.Subnet).Errorf("advertiseNetworksOnStart: failed to advertise the subnet: %v", err)
 			}
 		}
 	}
@@ -69,45 +68,50 @@ func waitContainerHealthy(networkID, endpointID string) bool {
 			log.Errorf("Cannot connect to Docker: %v", err)
 		}
 
-		network, err := cli.NetworkInspect(context.Background(), networkID, types.NetworkInspectOptions{})
+		network, err := cli.NetworkInspect(context.TODO(), networkID, types.NetworkInspectOptions{})
 		if err != nil {
 			log.Errorf("Cannot inspect network: %v", err)
 		}
 
 		if len(network.Containers) == 0 {
 			log.Errorf("No containers found from network %s, skipping BGP route", network.Name)
+			cli.Close()
 			return false
 		}
 
 		for containerID, endpoint := range network.Containers {
-			if endpoint.EndpointID == endpointID {
-				container, _ := cli.ContainerInspect(context.Background(), containerID)
-				log.Infof("waitContainerHealthy, waiting container %s", container.Name)
-				if container.State != nil {
-					if container.State.Health != nil {
-						if container.State.Health.Status == "healthy" {
-							log.Infof("Container %s healthy, adding BGP route(s)", container.Name)
-							return true
-						}
-						if container.State.Health.Status == "unhealthy" {
-							log.Errorf("Container %s is unhealthy, skipping BGP route", container.Name)
-							return false
-						}
-					} else {
-						if container.State.Running == true {
-							log.Infof("Container %s running, adding BGP route(s)", container.Name)
-							return true
-						}
-						if container.State.Status != "created" {
-							log.Errorf("Container %s failed to start, skipping BGP route", container.Name)
-							return false
-						}
+			if endpoint.EndpointID != endpointID {
+				continue
+			}
+			container, _ := cli.ContainerInspect(context.TODO(), containerID)
+			log.Infof("waitContainerHealthy, waiting container %s", container.Name)
+			if container.State != nil {
+				if container.State.Health != nil {
+					if container.State.Health.Status == "healthy" {
+						log.Infof("Container %s healthy, adding BGP route(s)", container.Name)
+						cli.Close()
+						return true
+					}
+					if container.State.Health.Status == "unhealthy" {
+						log.Errorf("Container %s is unhealthy, skipping BGP route", container.Name)
+						cli.Close()
+						return false
+					}
+				} else {
+					if container.State.Running == true {
+						log.Infof("Container %s running, adding BGP route(s)", container.Name)
+						cli.Close()
+						return true
+					}
+					if container.State.Status != "created" {
+						log.Errorf("Container %s failed to start, skipping BGP route", container.Name)
+						cli.Close()
+						return false
 					}
 				}
-			} else {
-				return false
 			}
 		}
+		cli.Close()
 		time.Sleep(1 * time.Second)
 	}
 }
@@ -150,7 +154,9 @@ func watchDockerEvents(ctx context.Context) {
 	backoffConfig := backoff.NewExponentialBackOff(
 		backoff.WithInitialInterval(1*time.Second),
 		backoff.WithMultiplier(1.5),
+		backoff.WithRandomizationFactor(0),
 		backoff.WithMaxInterval(5*time.Second),
+		backoff.WithMaxElapsedTime(0),
 	)
 
 	ticker := backoff.NewTicker(backoffConfig)
@@ -205,6 +211,7 @@ func watchDockerEvents(ctx context.Context) {
 				}
 			}
 			cli.Close()
+			backoffConfig.Reset()
 
 		case <-ctx.Done():
 			log.Warnf("watchDockerEvents: exiting due to: %v", ctx.Err())
@@ -220,15 +227,13 @@ func handleDockerNetworkCreate(ctx context.Context, cli *client.Client, event *e
 		log.Errorf("handleDockerNetworkCreate: cannot inspect the network: %v", err)
 		return
 	}
-	if !isNetworkAdvertised(network.ID) {
-		log = log.WithField("network.name", network.Name)
-		if l, ok := network.Labels["bgplb_advertise"]; ok && l == "true" {
-			for _, ipam := range network.IPAM.Config {
-				if err := addAdvertisedSubnet(ctx, network.ID, ipam.Subnet); err == nil {
-					log.WithField("subnet", ipam.Subnet).Info("handleDockerNetworkCreate: advertising the subnet")
-				} else {
-					log.WithField("subnet", ipam.Subnet).Errorf("handleDockerNetworkCreate: failed to advertise the subnet: %v", err)
-				}
+	log = log.WithField("network.name", network.Name)
+	if l, ok := network.Labels["bgplb_advertise"]; ok && l == "true" {
+		for _, ipam := range network.IPAM.Config {
+			if err := addAdvertisedSubnet(ctx, network.ID, ipam.Subnet); err == nil {
+				log.WithField("subnet", ipam.Subnet).Info("handleDockerNetworkCreate: advertising the subnet")
+			} else {
+				log.WithField("subnet", ipam.Subnet).Errorf("handleDockerNetworkCreate: failed to advertise the subnet: %v", err)
 			}
 		}
 	}
@@ -236,12 +241,10 @@ func handleDockerNetworkCreate(ctx context.Context, cli *client.Client, event *e
 
 func handleDockerNetworkDestroy(ctx context.Context, event *events.Message) {
 	log := log.WithField("network.id", event.Actor.ID[:11])
-	if isNetworkAdvertised(event.Actor.ID) {
-		if err := delAdvertisedNetwork(ctx, event.Actor.ID); err == nil {
-			log.Info("handleDockerNetworkDestroy: removed the advertised network")
-		} else {
-			log.Errorf("handleDockerNetworkDestroy: failed to remove the advertised network: %v", err)
-		}
+	if err := delAdvertisedNetwork(ctx, event.Actor.ID); err == nil {
+		log.Info("handleDockerNetworkDestroy: removed the advertised network")
+	} else {
+		log.Errorf("handleDockerNetworkDestroy: failed to remove the advertised network: %v", err)
 	}
 }
 
@@ -249,7 +252,7 @@ func handleDockerContainerKill(ctx context.Context, cli *client.Client, event *e
 	log := log.WithField("container.id", event.Actor.ID[:11])
 	if event.Actor.Attributes["signal"] == SIGUSR2Number {
 		log.Info("SIGUSR2 signal received. Gracefully drain the load")
-		delContainerRoutes(event.ID, cli)
+		delContainerRoutes(event.Actor.ID, cli)
 
 		if SIGUSR2Action == "stop" {
 			log.Info("Stopping the container due to the 'SIGUSR2_ACTION=stop'")

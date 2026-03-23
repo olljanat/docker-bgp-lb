@@ -23,7 +23,7 @@ var (
 
 func startBgpServer(peerAddress string) error {
 	routerID = os.Getenv("ROUTER_ID")
-	if routerID == "" && net.ParseIP(routerID) == nil {
+	if routerID == "" || net.ParseIP(routerID) == nil {
 		return fmt.Errorf("Environment variable ROUTER_ID is required\r\n")
 	}
 
