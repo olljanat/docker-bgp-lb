@@ -13,6 +13,7 @@ require (
 )
 
 require (
+	github.com/cenkalti/backoff/v4 v4.3.0
 	github.com/google/uuid v1.6.0
 	github.com/osrg/gobgp/v3 v3.25.0
 	google.golang.org/protobuf v1.33.0

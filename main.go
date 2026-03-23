@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
+	"slices"
 	"sync"
 
 	"github.com/davecgh/go-spew/spew"
@@ -13,25 +16,31 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-var scs = spew.ConfigState{Indent: "  "}
-var log = logrus.Logger{}
-var stateFile = "/bgplb.json"
 var driverScope = "local"
+var lbServer *bgpLB
+var log = &logrus.Logger{}
+var scs = spew.ConfigState{Indent: "  "}
+var stateFile = "/bgplb.json"
 
 type bgpLBEndpoint struct {
-	macAddress  net.HardwareAddr
 	vethInside  string
 	vethOutside string
 }
 
 type bgpNetwork struct {
-	bridgeName string
-	endpoints  map[string]*bgpLBEndpoint
+	endpoints map[string]*bgpLBEndpoint
+}
+
+type advertisedNetwork struct {
+	subnets []string
+	sync.Mutex
 }
 
 type bgpLB struct {
-	scope    string
 	Networks map[string]*bgpNetwork
+
+	advertisedNetworks map[string]*advertisedNetwork
+	scope              string
 	sync.Mutex
 }
 
@@ -105,18 +114,17 @@ func (d *bgpLB) CreateNetwork(r *api.CreateNetworkRequest) error {
 		return types.ForbiddenErrorf("network %s exists", r.NetworkID)
 	}
 
-	bridgeName, err := createBridge(r.NetworkID)
+	err := createBridgeFromNetID(r.NetworkID)
 	if err != nil {
 		return err
 	}
 
 	bgpNetwork := &bgpNetwork{
-		bridgeName: bridgeName,
-		endpoints:  make(map[string]*bgpLBEndpoint),
+		endpoints: make(map[string]*bgpLBEndpoint),
 	}
 
 	d.Networks[r.NetworkID] = bgpNetwork
-	err = d.save()
+	err = d.saveState()
 	if err != nil {
 		return err
 	}
@@ -139,7 +147,7 @@ func (d *bgpLB) DeleteNetwork(r *api.DeleteNetworkRequest) error {
 	}
 
 	delete(d.Networks, r.NetworkID)
-	err = d.save()
+	err = d.saveState()
 	if err != nil {
 		return err
 	}
@@ -164,18 +172,9 @@ func (d *bgpLB) CreateEndpoint(r *api.CreateEndpointRequest) (*api.CreateEndpoin
 		return nil, types.ForbiddenErrorf("%s network does not exist", r.NetworkID)
 	}
 
-	intfInfo := new(api.EndpointInterface)
-	parsedMac, _ := net.ParseMAC(intfInfo.MacAddress)
+	d.Networks[r.NetworkID].endpoints[r.EndpointID] = &bgpLBEndpoint{}
 
-	endpoint := &bgpLBEndpoint{
-		macAddress: parsedMac,
-	}
-
-	d.Networks[r.NetworkID].endpoints[r.EndpointID] = endpoint
-
-	resp := &api.CreateEndpointResponse{
-		Interface: intfInfo,
-	}
+	resp := &api.CreateEndpointResponse{}
 
 	// Start Goroutine which will add local and BGP routes after container is up and running
 	go addRoute(r.NetworkID, r.EndpointID, r.Interface.Address, r.Interface.AddressIPv6)
@@ -218,7 +217,7 @@ func (d *bgpLB) EndpointInfo(r *api.InfoRequest) (*api.InfoResponse, error) {
 	value := make(map[string]string)
 
 	value["ip_address"] = ""
-	value["mac_address"] = endpointInfo.macAddress.String()
+	value["mac_address"] = ""
 	value["veth_outside"] = endpointInfo.vethOutside
 
 	resp := &api.InfoResponse{
@@ -241,13 +240,12 @@ func (d *bgpLB) Join(r *api.JoinRequest) (*api.JoinResponse, error) {
 		return nil, types.ForbiddenErrorf("%s endpoint does not exist", r.NetworkID)
 	}
 
-	endpointInfo := d.Networks[r.NetworkID].endpoints[r.EndpointID]
-	vethInside, vethOutside, err := createVethPair(endpointInfo.macAddress)
+	vethInside, vethOutside, err := createVethPair()
 	if err != nil {
 		return nil, err
 	}
 
-	if err := attachInterfaceToBridge(d.Networks[r.NetworkID].bridgeName, vethOutside); err != nil {
+	if err := attachInterfaceToBridge(getBridgeNameByNetID(r.NetworkID), vethOutside); err != nil {
 		return nil, err
 	}
 
@@ -304,15 +302,15 @@ func (d *bgpLB) RevokeExternalConnectivity(r *api.RevokeExternalConnectivityRequ
 	return nil
 }
 
-func (d *bgpLB) save() error {
-	data, err := json.Marshal(d)
+func (lb *bgpLB) saveState() error {
+	data, err := json.Marshal(lb)
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(stateFile, data, 0644)
 }
 
-func load() (*bgpLB, error) {
+func loadState() (*bgpLB, error) {
 	data, err := os.ReadFile(stateFile)
 	if err != nil {
 		return nil, err
@@ -325,24 +323,97 @@ func load() (*bgpLB, error) {
 	return &b, nil
 }
 
-func main() {
-	log = *logrus.New()
-	log.SetLevel(logrus.DebugLevel)
-	log.Out = os.Stdout
+func addAdvertisedSubnet(ctx context.Context, netID, subnet string) error {
+	net := &advertisedNetwork{}
 
-	peerAddress := os.Getenv("PEER_ADDRESS")
-	if net.ParseIP(peerAddress) != nil {
-		err := startBgpServer(peerAddress)
-		if err != nil {
-			log.Errorf("Starting BGP server failed: %v", err)
-			return
+	lbServer.Lock()
+	if n, ok := lbServer.advertisedNetworks[netID]; !ok {
+		lbServer.advertisedNetworks[netID] = net
+	} else {
+		net = n
+	}
+	lbServer.Unlock()
+
+	net.Lock()
+	if slices.Contains(net.subnets, subnet) {
+		net.Unlock()
+		return fmt.Errorf("addAdvertisedSubnet: the subnet '%s' is already advertised", subnet)
+	}
+	// reserve the subnet before the external call
+	net.subnets = append(net.subnets, subnet)
+	net.Unlock()
+
+	if !isPrefixAdvertised(ctx, subnet) {
+		if err := advertisePrefix(ctx, subnet); err != nil {
+			net.Lock()
+			// remove the reserved subnet if advertising failed
+			idx := slices.Index(net.subnets, subnet)
+			if idx >= 0 {
+				net.subnets = slices.Delete(net.subnets, idx, idx+1)
+			}
+			net.Unlock()
+			return fmt.Errorf("addAdvertisedSubnet: failed to advertise the subnet: %w", err)
 		}
-		go getGwBridge()
 	}
 
-	if os.Getenv("SIGUSR2_HANDLER") == "true" {
-		log.Infof("Starting SIGUSR2 signal handler")
-		go watchDockerStopEvents(os.Getenv("SIGUSR2_ACTION"))
+	return nil
+}
+
+func delAdvertisedNetwork(ctx context.Context, netID string) error {
+	lbServer.Lock()
+
+	net, ok := lbServer.advertisedNetworks[netID]
+	if !ok {
+		lbServer.Unlock()
+		return fmt.Errorf("delAdvertisedNetwork: network '%s' is not advertised", netID[:11])
+	}
+	lbServer.Unlock()
+
+	net.Lock()
+	subnets := append([]string(nil), net.subnets...)
+	net.Unlock()
+
+	for _, subnet := range subnets {
+		if isPrefixAdvertised(ctx, subnet) {
+			if err := withdrawPrefix(ctx, subnet); err != nil {
+				return fmt.Errorf("delAdvertisedNetwork: failed to withdraw the subnet %w", err)
+			}
+		}
+	}
+
+	lbServer.Lock()
+	delete(lbServer.advertisedNetworks, netID)
+	lbServer.Unlock()
+	return nil
+}
+
+func main() {
+	log = &logrus.Logger{
+		Out:   os.Stdout,
+		Level: logrus.DebugLevel,
+		Formatter: &logrus.TextFormatter{
+			FullTimestamp:          true,
+			DisableLevelTruncation: true,
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	peerAddress := os.Getenv("PEER_ADDRESS")
+	if peerAddress == "" {
+		log.Error("Environment variable PEER_ADDRESS is required")
+		return
+	}
+
+	if net.ParseIP(peerAddress) == nil {
+		log.Errorf("Value of PEER_ADDRESS is not a valid IP address. Got: %s", peerAddress)
+		return
+	}
+
+	if err := startBgpServer(peerAddress); err != nil {
+		log.Errorf("Starting BGP server failed: %v", err)
+		return
 	}
 
 	if os.Getenv("GLOBAL_SCOPE") == "true" {
@@ -351,37 +422,38 @@ func main() {
 
 	log.Infof("Starting Docker BGP LB Plugin")
 
+	lbServer = &bgpLB{
+		advertisedNetworks: make(map[string]*advertisedNetwork),
+		scope:              driverScope,
+	}
+	go advertiseNetworksOnStart(ctx)
+	go watchDockerEvents(ctx)
 	// Load saves networks configuration but only when we are not running in swarm mode.
 	// This is because swarm will automatically create/remove networks when needed.
-	var d *bgpLB
-	var err error
-	if os.Getenv("GLOBAL_SCOPE") == "true" {
-		log.Println("Running in Swarm mode, starting with an empty configuration:", err)
-		d = &bgpLB{
-			scope:    driverScope,
-			Networks: make(map[string]*bgpNetwork),
-		}
+	lbServer.Lock()
+	if driverScope == "global" {
+		log.Info("Running in Swarm mode, starting with an empty configuration.")
+		lbServer.Networks = make(map[string]*bgpNetwork)
 	} else {
-		d, err = load()
+		d, err := loadState()
 		if err != nil {
-			log.Println("Failed to load data, starting with an empty configuration:", err)
-			d = &bgpLB{
-				scope:    driverScope,
-				Networks: make(map[string]*bgpNetwork),
-			}
+			log.Info("Failed to load data, starting with an empty configuration.")
+			lbServer.Networks = make(map[string]*bgpNetwork)
+		} else {
+			lbServer.Networks = d.Networks
 		}
 	}
 
-	for id, network := range d.Networks {
-		if _, err := createBridge(id); err != nil {
+	for id, network := range lbServer.Networks {
+		if err := createBridgeFromNetID(id); err != nil {
 			log.Printf("Failed to create bridge for network %s: %v", id, err)
 		}
-		network.bridgeName = getBridgeName(id)
 		network.endpoints = make(map[string]*bgpLBEndpoint)
 	}
+	lbServer.Unlock()
 
-	h := api.NewHandler(d)
-	if err = h.ServeUnix("bgplb", 0); err != nil {
+	h := api.NewHandler(lbServer)
+	if err := h.ServeUnix("bgplb", 0); err != nil {
 		log.Errorf("ServeUnix failed: %v", err)
 		return
 	}

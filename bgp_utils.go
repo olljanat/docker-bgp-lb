@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 
 	apiGoBGP "github.com/osrg/gobgp/v3/api"
 	loggerGoBGP "github.com/osrg/gobgp/v3/pkg/log"
@@ -14,13 +15,15 @@ import (
 	apb "google.golang.org/protobuf/types/known/anypb"
 )
 
-var bgpServer = serverGoBGP.BgpServer{}
-var routerid = ""
-var localAs = uint32(0)
+var (
+	bgpServer = serverGoBGP.BgpServer{}
+	localAS   = uint32(0)
+	routerID  = ""
+)
 
 func startBgpServer(peerAddress string) error {
-	routerid = os.Getenv("ROUTER_ID")
-	if routerid == "" && net.ParseIP(routerid) == nil {
+	routerID = os.Getenv("ROUTER_ID")
+	if routerID == "" || net.ParseIP(routerID) == nil {
 		return fmt.Errorf("Environment variable ROUTER_ID is required\r\n")
 	}
 
@@ -34,7 +37,7 @@ func startBgpServer(peerAddress string) error {
 	if err != nil {
 		return fmt.Errorf("Environment variable LOCAL_AS value is invalid\r\n")
 	}
-	localAs = uint32(localAsInt)
+	localAS = uint32(localAsInt)
 
 	peerAsInt, err := strconv.Atoi(os.Getenv("PEER_AS"))
 	if err != nil {
@@ -48,8 +51,8 @@ func startBgpServer(peerAddress string) error {
 	go bgpServer.Serve()
 	err = bgpServer.StartBgp(context.Background(), &apiGoBGP.StartBgpRequest{
 		Global: &apiGoBGP.Global{
-			RouterId:   routerid,
-			Asn:        localAs,
+			RouterId:   routerID,
+			Asn:        localAS,
 			ListenPort: routerPort,
 		},
 	})
@@ -81,7 +84,7 @@ func addRoute(NetworkID, EndpointID, ipv4, ipv6 string) {
 		return
 	}
 
-	bridgeName := getBridgeName(NetworkID)
+	bridgeName := getBridgeNameByNetID(NetworkID)
 	bridge, err := netlink.LinkByName(bridgeName)
 	if err != nil {
 		log.Errorf("addRoute error: %v", err)
@@ -105,8 +108,6 @@ func addRoute(NetworkID, EndpointID, ipv4, ipv6 string) {
 
 		addBgpRoute(ip.String(), 128, apiGoBGP.Family_AFI_IP6)
 	}
-
-	return
 }
 
 func addBgpRoute(prefix string, mask int, ipFamily apiGoBGP.Family_Afi) error {
@@ -118,7 +119,7 @@ func addBgpRoute(prefix string, mask int, ipFamily apiGoBGP.Family_Afi) error {
 		Origin: 0,
 	})
 	a2, _ := apb.New(&apiGoBGP.NextHopAttribute{
-		NextHop: routerid,
+		NextHop: routerID,
 	})
 	a3, _ := apb.New(&apiGoBGP.AsPathAttribute{
 		Segments: []*apiGoBGP.AsSegment{
@@ -139,7 +140,7 @@ func addBgpRoute(prefix string, mask int, ipFamily apiGoBGP.Family_Afi) error {
 }
 
 func delRoute(NetworkID, EndpointID string) {
-	bridgeName := getBridgeName(NetworkID)
+	bridgeName := getBridgeNameByNetID(NetworkID)
 	bridge, err := netlink.LinkByName(bridgeName)
 	if err != nil {
 		log.Errorf("delRoute error: %v", err)
@@ -168,8 +169,6 @@ func delRoute(NetworkID, EndpointID string) {
 			log.Errorf("Cannot remove local route to: %v , Error: %v", v6dst.String(), err)
 		}
 	}
-
-	return
 }
 
 func delBgpRoute(prefix string, mask int, ipFamily apiGoBGP.Family_Afi) error {
@@ -181,7 +180,7 @@ func delBgpRoute(prefix string, mask int, ipFamily apiGoBGP.Family_Afi) error {
 		Origin: 0,
 	})
 	a2, _ := apb.New(&apiGoBGP.NextHopAttribute{
-		NextHop: routerid,
+		NextHop: routerID,
 	})
 	a3, _ := apb.New(&apiGoBGP.AsPathAttribute{
 		Segments: []*apiGoBGP.AsSegment{
@@ -203,5 +202,119 @@ func delBgpRoute(prefix string, mask int, ipFamily apiGoBGP.Family_Afi) error {
 	if err != nil {
 		return err
 	}
+	return nil
+}
+
+func isPrefixAdvertised(ctx context.Context, prefix string) bool {
+	_, ipnet, err := net.ParseCIDR(prefix)
+	if err != nil {
+		return false
+	}
+
+	var counter int
+	callback := func(*apiGoBGP.Destination) { counter++ }
+	request := &apiGoBGP.ListPathRequest{
+		Family:   &apiGoBGP.Family{Afi: apiGoBGP.Family_AFI_IP, Safi: apiGoBGP.Family_SAFI_UNICAST},
+		Prefixes: []*apiGoBGP.TableLookupPrefix{{Prefix: prefix}},
+	}
+
+	if ipnet.IP.To4() == nil && strings.Contains(ipnet.IP.String(), ":") {
+		request.Family.Afi = apiGoBGP.Family_AFI_IP6
+	}
+
+	bgpServer.ListPath(ctx, request, callback)
+
+	return counter > 0
+}
+
+func advertisePrefix(ctx context.Context, prefix string) error {
+	_, ipnet, err := net.ParseCIDR(prefix)
+	if err != nil {
+		return fmt.Errorf("advertisePrefix: failed to parse the prefix: %w", err)
+	}
+
+	mask, _ := ipnet.Mask.Size()
+	var family apiGoBGP.Family_Afi
+	if ipnet.IP.To4() == nil && strings.Contains(ipnet.IP.String(), ":") {
+		family = apiGoBGP.Family_AFI_IP6
+	} else {
+		family = apiGoBGP.Family_AFI_IP
+	}
+
+	nlri, _ := apb.New(&apiGoBGP.IPAddressPrefix{
+		Prefix:    ipnet.IP.String(),
+		PrefixLen: uint32(mask),
+	})
+	a1, _ := apb.New(&apiGoBGP.OriginAttribute{
+		Origin: 0,
+	})
+	a2, _ := apb.New(&apiGoBGP.NextHopAttribute{
+		NextHop: routerID,
+	})
+	a3, _ := apb.New(&apiGoBGP.AsPathAttribute{
+		Segments: []*apiGoBGP.AsSegment{
+			{
+				Type: 2,
+			},
+		},
+	})
+	attrs := []*apb.Any{a1, a2, a3}
+	if _, err := bgpServer.AddPath(ctx, &apiGoBGP.AddPathRequest{
+		Path: &apiGoBGP.Path{
+			Family: &apiGoBGP.Family{Afi: family, Safi: apiGoBGP.Family_SAFI_UNICAST},
+			Nlri:   nlri,
+			Pattrs: attrs,
+		},
+	}); err != nil {
+		return fmt.Errorf("advertisePrefix: failed to add the prefix: %w", err)
+	}
+
+	return nil
+}
+
+func withdrawPrefix(ctx context.Context, prefix string) error {
+	_, ipnet, err := net.ParseCIDR(prefix)
+	if err != nil {
+		return fmt.Errorf("withdrawPrefix: failed to parse the prefix: %w", err)
+	}
+
+	mask, _ := ipnet.Mask.Size()
+	var family apiGoBGP.Family_Afi
+	if ipnet.IP.To4() == nil && strings.Contains(ipnet.IP.String(), ":") {
+		family = apiGoBGP.Family_AFI_IP6
+	} else {
+		family = apiGoBGP.Family_AFI_IP
+	}
+
+	nlri, _ := apb.New(&apiGoBGP.IPAddressPrefix{
+		Prefix:    ipnet.IP.String(),
+		PrefixLen: uint32(mask),
+	})
+	a1, _ := apb.New(&apiGoBGP.OriginAttribute{
+		Origin: 0,
+	})
+	a2, _ := apb.New(&apiGoBGP.NextHopAttribute{
+		NextHop: routerID,
+	})
+	a3, _ := apb.New(&apiGoBGP.AsPathAttribute{
+		Segments: []*apiGoBGP.AsSegment{
+			{
+				Type: 2,
+			},
+		},
+	})
+	attrs := []*apb.Any{a1, a2, a3}
+	p1 := &apiGoBGP.Path{
+		Family: &apiGoBGP.Family{Afi: family, Safi: apiGoBGP.Family_SAFI_UNICAST},
+		Nlri:   nlri,
+		Pattrs: attrs,
+	}
+	if err := bgpServer.DeletePath(ctx, &apiGoBGP.DeletePathRequest{
+		TableType: apiGoBGP.TableType_GLOBAL,
+		Path:      p1,
+	}); err != nil {
+		return fmt.Errorf("withdrawPrefix: failed to delete the prefix: %w", err)
+	}
+
 	return nil
 }
